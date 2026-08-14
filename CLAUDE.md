@@ -72,3 +72,16 @@ The **`ponytail` plugin** sits underneath those phases rather than in one of the
 The plugin also installs three hooks (`SessionStart`, `SubagentStart`, `UserPromptSubmit`) that keep the active mode alive across compaction and sub-agents. They shell out to `node`, so a harness without it on `PATH` loses mode persistence — the skills themselves still work.
 
 **Not covered by any skill:** the PR ritual above — open on finish, never merge, one commit per PR — is prose only. So is the `AskUserQuestion` ban.
+
+## Standards
+
+### Code
+
+- Clean code; near-100% test coverage; linting; tool-enforced formatting.
+- No bloat in code, comments, features, or explanations — only what we've determined we need (ponytail).
+
+### Documentation
+
+- Succinct everywhere, chat replies included.
+- Mermaid diagrams and bullet/numbered lists over prose.
+- Decision churn — changed minds and why — lives on issue tickets; committed docs (ADRs included) hold only settled outcomes and what is actually implemented.
