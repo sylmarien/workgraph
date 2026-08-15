@@ -1,10 +1,10 @@
-# graph-orchestrator
+# workgraph
 
 ## Agent skills
 
 ### Issue tracker
 
-Issues and PRDs live as GitHub issues on `sylmarien/graph-orchestrator`, driven by the `gh` CLI. See `docs/agents/issue-tracker.md`.
+Issues and PRDs live as GitHub issues on `sylmarien/workgraph`, driven by the `gh` CLI. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
