@@ -1,6 +1,6 @@
 # workgraph
 
-Orchestrates development workflows declared as graphs. Nodes run fresh-harness agents; a node's outcome selects the transition to follow.
+Orchestrates development workflows declared as graphs. Nodes run agents or commands; a node's outcome selects the transition to follow.
 
 ## Language
 
@@ -9,12 +9,22 @@ A named directed graph of nodes with one start node. Loops are allowed.
 _Avoid_: Pipeline, flow, DAG
 
 **Node**:
-A reusable unit of work that references an agent definition by name. Workflows reference nodes; a node belongs to none.
+A workflow-local binding of one agent definition or command to outcomes, transitions, and limits.
 _Avoid_: Step, stage, state
 
+**Agent node**:
+A node that runs an agent. It references an agent definition by name and declares its own outcome set.
+
+**Command node**:
+A node that runs a command. The node reports `pass` when the command exits with code 0 and `fail` otherwise.
+_Avoid_: Check node, deterministic check
+
 **Agent definition**:
-The named specification of the agent a node runs, shared across workflows.
+The specification of the agent an agent node runs, written in the harness's native format and shared across workflows.
 _Avoid_: Agent spec, agent config
+
+**Harness**:
+The runtime that executes an agent.
 
 **Run**:
 One execution of a workflow, from its start node until `END` or escalation.
