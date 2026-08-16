@@ -14,6 +14,10 @@ The five canonical triage roles are used as-is: `needs-triage`, `needs-info`, `r
 
 Single-context — when domain docs are written, they go to one `CONTEXT.md` and `docs/adr/` at the repo root. Neither exists yet; `/domain-modeling` creates them lazily. See `docs/agents/domain.md`.
 
+### Writing style
+
+All prose — docs, code comments, commit messages, PR and issue text, and replies to the user in conversation — follows `docs/agents/writing-style.md`: simple declarative sentences, named actors, no metaphors, no personification, no rhetorical devices, bullets for sets and sequences, short factual comments. Existing text may predate these rules; follow the rules anyway instead of matching it.
+
 ## Workflow
 
 ### Asking the user
