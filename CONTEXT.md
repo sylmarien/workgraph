@@ -34,6 +34,10 @@ _Avoid_: Execution, instance, job
 One value from a node's closed set of possible results, reported when a node run ends.
 _Avoid_: Result, status, exit state
 
+**Handoff**:
+Optional free text an agent node reports alongside its outcome. workgraph delivers it to the node the taken transition targets, then discards it. A command node ignores it.
+_Avoid_: Payload, message, artifact
+
 **Transition**:
 The routing from one way a node run can end — an outcome, or the visit limit tripping — to a target node or `END`. A node's transitions are total: every outcome has one.
 _Avoid_: Edge (in prose; fine in graph rendering), route
