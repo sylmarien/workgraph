@@ -27,11 +27,18 @@ _Avoid_: Agent spec, agent config
 The runtime that executes an agent.
 
 **Run**:
-One execution of a workflow, from its start node until `END` or escalation.
+One execution of a workflow, from its start node until `END`, a failure, or an escalation.
 _Avoid_: Execution, instance, job
 
+**Failure**:
+A node run ending without an outcome; the run stops.
+_Avoid_: Crash
+
+**Resume**:
+Restarting a stopped run at the node where it stopped, from the run's saved state. The first re-entry does not count toward the visit limit.
+
 **Outcome**:
-One value from a node's closed set of possible results, reported when a node run ends.
+One value from a node's closed set of possible results.
 _Avoid_: Result, status, exit state
 
 **Handoff**:
