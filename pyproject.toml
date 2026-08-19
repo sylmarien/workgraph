@@ -1,0 +1,38 @@
+[project]
+name = "workgraph"
+version = "0.1.0"
+description = "Graph workflow orchestrator."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
+dependencies = []
+
+[project.scripts]
+workgraph = "workgraph.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.8.17,<0.9.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "mypy>=1.17",
+    "pytest>=8.4",
+    "pytest-cov>=6.2",
+    "ruff>=0.12",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+strict = true
+files = ["src", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--cov=workgraph --cov-report=term-missing"
+
+[tool.coverage.report]
+fail_under = 100
