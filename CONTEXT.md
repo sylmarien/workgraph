@@ -49,11 +49,8 @@ _Avoid_: Payload, message, artifact
 The routing from one way a node run can end — an outcome, or the visit limit tripping — to a target node or `END`. A node's transitions are total: every outcome has one.
 _Avoid_: Edge (in prose; fine in graph rendering), route
 
-**END**:
-Reserved transition target marking workflow completion. Not a node.
-
-**LIMIT**:
-Reserved transition key for the transition taken when a node's visit limit is reached. Not an outcome the agent can report.
+**Reserved name**:
+`END` and `LIMIT`. A reserved name cannot name a node or an outcome. A transition target of `END` marks workflow completion. A transition key of `LIMIT` routes the node when its visit limit is reached.
 
 **Visit limit**:
 The maximum number of times a run may enter a node. Reaching it takes the `LIMIT` transition if one exists; otherwise the run escalates.
