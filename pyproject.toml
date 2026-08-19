@@ -6,7 +6,9 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
 license-files = ["LICENSE"]
-dependencies = []
+dependencies = [
+    "termaid>=0.8.0",
+]
 
 [project.scripts]
 workgraph = "workgraph.cli:main"
