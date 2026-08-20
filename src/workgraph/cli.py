@@ -5,6 +5,7 @@ import sys
 
 from termaid import render
 
+from workgraph.run import Escalation, NodeFailure, RunInProgress, run_workflow
 from workgraph.workflow import WorkflowError, load_workflow, to_mermaid
 
 
@@ -13,6 +14,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     match args.command:
+        case "run":
+            return _run(args)
         case "viz":
             return _viz(args)
         case _:
@@ -26,8 +29,17 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Graph workflow orchestrator.",
     )
     subparsers = parser.add_subparsers(dest="command")
+    _add_run_parser(subparsers)
     _add_viz_parser(subparsers)
     return parser
+
+
+def _add_run_parser(
+    subparsers: "argparse._SubParsersAction[argparse.ArgumentParser]",
+) -> None:
+    run = subparsers.add_parser("run", help="Run a workflow.")
+    run.add_argument("workflow", help="Workflow name.")
+    run.add_argument("input", help="Run input, typically an issue ref.")
 
 
 def _add_viz_parser(
@@ -58,6 +70,22 @@ def _add_viz_parser(
         help="Print the mermaid source.",
     )
     viz.set_defaults(style="unicode")
+
+
+def _run(args: argparse.Namespace) -> int:
+    try:
+        workflow = load_workflow(args.workflow)
+        run_workflow(args.workflow, workflow, args.input)
+    except (WorkflowError, RunInProgress) as error:
+        print(error, file=sys.stderr)
+        return 1
+    except NodeFailure as error:
+        print(error, file=sys.stderr)
+        return 2
+    except Escalation as error:
+        print(error, file=sys.stderr)
+        return 3
+    return 0
 
 
 def _viz(args: argparse.Namespace) -> int:
