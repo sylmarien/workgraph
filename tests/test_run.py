@@ -206,7 +206,7 @@ def test_loop_of_shell_commands_runs_to_end(
     assert read_state() == {
         "workflow": "loop",
         "input": "issue #5",
-        "node": "check",
+        "node": "END",
         "visits": {"check": 2},
     }
     assert not LOCK_FILE.exists()
@@ -305,7 +305,7 @@ def test_two_agent_loop_runs_to_end(
     assert read_state() == {
         "workflow": "pair",
         "input": "issue #9",
-        "node": "build",
+        "node": "END",
         "visits": {"plan": 2, "build": 2},
     }
     build_args = spawn_args(project)[1]
@@ -360,7 +360,7 @@ def test_command_successor_drops_the_handoff(
     assert main(["run", "chain", "issue #9"]) == 0
     assert capsys.readouterr().out == "review: done\nsnapshot: pass\n"
     snapshot = json.loads((project / "snapshot.json").read_text())
-    assert snapshot["handoff"] == "Ship it."
+    assert snapshot["handoff"] == ["review", "Ship it."]
     assert "handoff" not in read_state()
 
 
@@ -472,6 +472,115 @@ def test_unspawnable_harness_stops_the_run(
     captured = capsys.readouterr()
     assert captured.out == "plan: failure\n"
     assert "node 'plan': spawn failure" in captured.err
+
+
+def test_resume_after_a_failure_completes_the_run(
+    dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    write(project, "fixable", BROKEN.replace("workgraph-no-such-cmd", "./fixit"))
+    assert main(["run", "fixable", "issue #5"]) == 2
+    fixit = project / "fixit"
+    fixit.write_text("#!/bin/sh\nexit 0\n")
+    fixit.chmod(0o755)
+    assert main(["resume"]) == 0
+    assert capsys.readouterr().out == "check: failure\ncheck: pass\n"
+    assert read_state() == {
+        "workflow": "fixable",
+        "input": "issue #5",
+        "node": "END",
+        "visits": {"check": 1},
+    }
+    assert not LOCK_FILE.exists()
+
+
+def test_entries_after_the_grace_re_entry_are_counted(
+    dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    write(
+        project,
+        "fixable",
+        BROKEN.replace("workgraph-no-such-cmd", "./fixit").replace(
+            'fail = "END"', 'fail = "check"'
+        ),
+    )
+    assert main(["run", "fixable", "input"]) == 2
+    fixit = project / "fixit"
+    fixit.write_text("#!/bin/sh\ntest -f flag || { touch flag; exit 1; }\n")
+    fixit.chmod(0o755)
+    assert main(["resume"]) == 0
+    assert capsys.readouterr().out == "check: failure\ncheck: fail\ncheck: pass\n"
+    assert read_state()["visits"] == {"check": 2}
+
+
+def test_resume_after_an_escalation_grants_one_grace_pass(
+    dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    write(project, "spin", SPIN.replace('LIMIT = "END"\n', ""))
+    assert main(["run", "spin", "input"]) == 3
+    capsys.readouterr()
+    assert main(["resume"]) == 3
+    captured = capsys.readouterr()
+    assert captured.out == "spin: pass\n"
+    assert "node 'spin' reached its visit limit of 2" in captured.err
+    assert read_state()["visits"] == {"spin": 2}
+    assert not LOCK_FILE.exists()
+
+
+def test_resume_after_a_looping_limit_escalation_grants_one_grace_pass(
+    dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    write(project, "spin", SPIN.replace('LIMIT = "END"', 'LIMIT = "spin"'))
+    assert main(["run", "spin", "input"]) == 3
+    capsys.readouterr()
+    assert main(["resume"]) == 3
+    captured = capsys.readouterr()
+    assert captured.out == "spin: pass\n"
+    assert "LIMIT transitions loop without running a node" in captured.err
+    assert read_state()["visits"] == {"spin": 2}
+
+
+def test_resume_after_end_exits_with_an_error(
+    dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    write(project, "loop", LOOP)
+    assert main(["run", "loop", "input"]) == 0
+    capsys.readouterr()
+    assert main(["resume"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "reached END" in captured.err
+
+
+def test_resume_without_a_stopped_run_exits_with_an_error(
+    dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["resume"]) == 1
+    assert "nothing to resume" in capsys.readouterr().err
+
+
+def test_undelivered_handoff_is_delivered_on_resume(
+    dirs: tuple[Path, Path], fake_claude: None
+) -> None:
+    project, _ = dirs
+    write(project, "pair", TWO_AGENTS)
+    write_agent(project, "planner", PLANNER)
+    write_agent(project, "builder", "You are the builder.")
+    respond(project, outcome_response("done", handoff="Split the work in two."), "EXIT2")
+    assert main(["run", "pair", "issue #9"]) == 2
+    respond(project, outcome_response("done"))
+    assert main(["resume"]) == 0
+    prompts = [flag_value(args, "-p") for args in spawn_args(project)]
+    assert prompts == [
+        "issue #9",
+        "issue #9\n\nHandoff from plan:\nSplit the work in two.",
+        "issue #9\n\nHandoff from plan:\nSplit the work in two.",
+    ]
+    assert read_state()["visits"] == {"plan": 1, "build": 1}
 
 
 def test_unknown_workflow_returns_one(

@@ -35,7 +35,7 @@ A node run ending without an outcome; the run stops.
 _Avoid_: Crash
 
 **Resume**:
-Restarting a stopped run at the node where it stopped, from the run's saved state. The first re-entry does not count toward the visit limit.
+Restarting a stopped run at the node where it stopped, from the run's saved state. The first re-entry (the grace entry) does not count toward the visit limit.
 
 **Outcome**:
 One value from a node's closed set of possible results.
