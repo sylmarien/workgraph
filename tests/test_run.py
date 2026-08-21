@@ -105,6 +105,29 @@ done = "END"
 rework = "plan"
 """
 
+AGENT_THEN_COMMAND = """
+start = "review"
+
+[defaults]
+harness = "claude"
+model = "opus"
+effort = "high"
+
+[nodes.review]
+agent = "reviewer"
+outcomes = ["done"]
+
+[nodes.review.transitions]
+done = "snapshot"
+
+[nodes.snapshot]
+command = "cp .workgraph/run.json snapshot.json"
+
+[nodes.snapshot.transitions]
+pass = "END"
+fail = "END"
+"""
+
 PLANNER = """---
 name: planner
 description: Plans the work.
@@ -115,7 +138,7 @@ model: sonnet
 You are the planner."""
 
 FAKE_CLAUDE = """#!/bin/sh
-{ printf '%s\\n' "$@"; echo '==='; } >> claude-calls.txt
+printf '%s\\0' "$@" '===' >> claude-calls.txt
 IFS= read -r response < responses
 sed -i 1d responses
 case "$response" in
@@ -149,15 +172,18 @@ def respond(project: Path, *responses: str) -> None:
     (project / "responses").write_text("\n".join(responses) + "\n")
 
 
-def outcome_response(outcome: str) -> str:
-    """Build a fake claude result JSON reporting the outcome."""
-    return json.dumps({"is_error": False, "structured_output": {"outcome": outcome}})
+def outcome_response(outcome: str, handoff: str | None = None) -> str:
+    """Build a fake claude result JSON reporting the outcome and an optional handoff."""
+    output: dict[str, str] = {"outcome": outcome}
+    if handoff is not None:
+        output["handoff"] = handoff
+    return json.dumps({"is_error": False, "structured_output": output})
 
 
 def spawn_args(project: Path) -> list[list[str]]:
     """Read the argv of each fake-claude spawn, in order."""
-    blocks = (project / "claude-calls.txt").read_text().split("===\n")
-    return [block.splitlines() for block in blocks if block]
+    log = (project / "claude-calls.txt").read_text()
+    return [block.split("\0") for block in log.split("\0===\0") if block]
 
 
 def flag_value(args: list[str], name: str) -> str:
@@ -290,6 +316,54 @@ def test_two_agent_loop_runs_to_end(
     assert not LOCK_FILE.exists()
 
 
+def test_handoff_appears_labelled_in_successor_prompt(
+    dirs: tuple[Path, Path], fake_claude: None
+) -> None:
+    project, _ = dirs
+    write(project, "pair", TWO_AGENTS)
+    write_agent(project, "planner", PLANNER)
+    write_agent(project, "builder", "You are the builder.")
+    respond(
+        project,
+        outcome_response("done", handoff="Split the work in two."),
+        outcome_response("rework"),
+        outcome_response("done"),
+        outcome_response("done"),
+    )
+    assert main(["run", "pair", "issue #9"]) == 0
+    prompts = [flag_value(args, "-p") for args in spawn_args(project)]
+    assert prompts == [
+        "issue #9",
+        "issue #9\n\nHandoff from plan:\nSplit the work in two.",
+        "issue #9",
+        "issue #9",
+    ]
+    assert "handoff" not in read_state()
+
+
+def test_handoff_reported_at_end_is_discarded(dirs: tuple[Path, Path], fake_claude: None) -> None:
+    project, _ = dirs
+    write(project, "agents", AGENT)
+    write_agent(project, "planner", PLANNER)
+    respond(project, outcome_response("done", handoff="Nobody follows."))
+    assert main(["run", "agents", "issue #9"]) == 0
+    assert "handoff" not in read_state()
+
+
+def test_command_successor_drops_the_handoff(
+    dirs: tuple[Path, Path], fake_claude: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    write(project, "chain", AGENT_THEN_COMMAND)
+    write_agent(project, "reviewer", "You are the reviewer.")
+    respond(project, outcome_response("done", handoff="Ship it."))
+    assert main(["run", "chain", "issue #9"]) == 0
+    assert capsys.readouterr().out == "review: done\nsnapshot: pass\n"
+    snapshot = json.loads((project / "snapshot.json").read_text())
+    assert snapshot["handoff"] == "Ship it."
+    assert "handoff" not in read_state()
+
+
 def test_spawn_flags_follow_the_decisions(
     dirs: tuple[Path, Path], fake_claude: None, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -305,11 +379,10 @@ def test_spawn_flags_follow_the_decisions(
     assert args[0] == "--bare"
     assert flag_value(args, "-p") == "issue #9"
     assert flag_value(args, "--output-format") == "json"
-    assert json.loads(flag_value(args, "--json-schema")) == {
-        "type": "object",
-        "properties": {"outcome": {"enum": ["done"]}},
-        "required": ["outcome"],
-    }
+    schema = json.loads(flag_value(args, "--json-schema"))
+    assert schema["properties"]["outcome"] == {"enum": ["done"]}
+    assert schema["properties"]["handoff"]["type"] == "string"
+    assert schema["required"] == ["outcome"]
     assert json.loads(flag_value(args, "--agents")) == {
         "planner": {"description": "Plans the work.", "prompt": "You are the planner."}
     }
