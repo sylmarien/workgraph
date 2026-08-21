@@ -50,6 +50,7 @@ def _run_nodes(name: str, workflow: dict[str, Any], run_input: str) -> None:
     defaults = workflow.get("defaults", {})
     visits: dict[str, int] = {}
     diverted: set[str] = set()
+    handoff: tuple[str, str] | None = None
     current = workflow["start"]
     while current != END:
         node = nodes[current]
@@ -70,18 +71,19 @@ def _run_nodes(name: str, workflow: dict[str, Any], run_input: str) -> None:
         diverted.clear()
         visits[current] = visits.get(current, 0) + 1
         try:
-            outcome = (
-                _run_agent(current, node, defaults, run_input)
-                if "agent" in node
-                else _run_command(current, node)
-            )
+            if "agent" in node:
+                outcome, handoff_text = _run_agent(current, node, defaults, run_input, handoff)
+            else:
+                outcome, handoff_text = _run_command(current, node), None
         except NodeFailure:
             print(f"{current}: failure", flush=True)
-            _write_state(name, run_input, current, visits)
+            _write_state(name, run_input, current, visits, handoff)
             raise
         print(f"{current}: {outcome}", flush=True)
-        _write_state(name, run_input, current, visits)
-        current = node["transitions"][outcome]
+        target = node["transitions"][outcome]
+        handoff = (current, handoff_text) if handoff_text is not None and target != END else None
+        _write_state(name, run_input, current, visits, handoff)
+        current = target
 
 
 def _run_command(name: str, node: dict[str, Any]) -> str:
@@ -92,9 +94,19 @@ def _run_command(name: str, node: dict[str, Any]) -> str:
     return "pass" if completed.returncode == 0 else "fail"
 
 
-def _run_agent(name: str, node: dict[str, Any], defaults: dict[str, Any], run_input: str) -> str:
+def _run_agent(
+    name: str,
+    node: dict[str, Any],
+    defaults: dict[str, Any],
+    run_input: str,
+    handoff: tuple[str, str] | None,
+) -> tuple[str, str | None]:
     definition = _load_agent_definition(name, node["agent"])
-    command = _agent_argv(node, defaults, definition, run_input)
+    prompt = run_input
+    if handoff is not None:
+        source, text = handoff
+        prompt = f"{run_input}\n\nHandoff from {source}:\n{text}"
+    command = _agent_argv(node, defaults, definition, prompt)
     try:
         completed = subprocess.run(command, check=False, capture_output=True, text=True)
     except OSError as error:
@@ -111,15 +123,22 @@ def _run_agent(name: str, node: dict[str, Any], defaults: dict[str, Any], run_in
     outcome = output.get("outcome") if isinstance(output, dict) else None
     if outcome not in node["outcomes"]:
         raise NodeFailure(f"node '{name}': agent reported no outcome from {node['outcomes']}")
-    return str(outcome)
+    handoff_text = output.get("handoff")
+    return str(outcome), str(handoff_text) if handoff_text is not None else None
 
 
 def _agent_argv(
-    node: dict[str, Any], defaults: dict[str, Any], definition: dict[str, str], run_input: str
+    node: dict[str, Any], defaults: dict[str, Any], definition: dict[str, str], prompt: str
 ) -> list[str]:
     schema = {
         "type": "object",
-        "properties": {"outcome": {"enum": node["outcomes"]}},
+        "properties": {
+            "outcome": {"enum": node["outcomes"]},
+            "handoff": {
+                "type": "string",
+                "description": "Optional free text delivered to the next node of the workflow.",
+            },
+        },
         "required": ["outcome"],
     }
     agent = node["agent"]
@@ -130,7 +149,7 @@ def _agent_argv(
         "claude",
         "--bare",
         "-p",
-        run_input,
+        prompt,
         "--output-format",
         "json",
         "--json-schema",
@@ -175,6 +194,20 @@ def _parse_agent_definition(text: str) -> dict[str, str]:
     return fields
 
 
-def _write_state(workflow: str, run_input: str, node: str, visits: dict[str, int]) -> None:
-    state = {"workflow": workflow, "input": run_input, "node": node, "visits": visits}
+def _write_state(
+    workflow: str,
+    run_input: str,
+    node: str,
+    visits: dict[str, int],
+    handoff: tuple[str, str] | None,
+) -> None:
+    state: dict[str, Any] = {
+        "workflow": workflow,
+        "input": run_input,
+        "node": node,
+        "visits": visits,
+    }
+    if handoff is not None:
+        # ponytail: stores the text only; add the source node when resume (#15) rebuilds the label.
+        state["handoff"] = handoff[1]
     STATE_FILE.write_text(json.dumps(state))
