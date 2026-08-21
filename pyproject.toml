@@ -25,8 +25,14 @@ dev = [
     "ruff>=0.12",
 ]
 
+[tool.ruff]
+line-length = 100
+
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.pycodestyle]
+max-line-length = 120
 
 [tool.mypy]
 strict = true

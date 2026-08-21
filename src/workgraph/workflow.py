@@ -44,8 +44,8 @@ def _find(name: str) -> Path:
         if path.is_file():
             return path
     raise WorkflowError(
-        f"workflow '{name}' not found in a .workgraph directory of the working"
-        " directory, its parents, or the home directory"
+        f"workflow '{name}' not found in a .workgraph directory of the working directory,"
+        " its parents, or the home directory"
     )
 
 

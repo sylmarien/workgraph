@@ -37,8 +37,7 @@ def run_workflow(name: str, workflow: dict[str, Any], run_input: str) -> None:
         LOCK_FILE.touch(exist_ok=False)
     except FileExistsError:
         raise RunInProgress(
-            f"a run is already in progress in this directory;"
-            f" delete {LOCK_FILE} if it is stale"
+            f"a run is already in progress in this directory; delete {LOCK_FILE} if it is stale"
         ) from None
     try:
         _run_nodes(name, workflow, run_input)
@@ -57,8 +56,7 @@ def _run_nodes(name: str, workflow: dict[str, Any], run_input: str) -> None:
         if limit is not None and visits.get(current, 0) >= limit:
             if LIMIT not in node["transitions"]:
                 raise Escalation(
-                    f"node '{current}' reached its visit limit of {limit}"
-                    " and has no LIMIT transition"
+                    f"node '{current}' reached its visit limit of {limit} and has no LIMIT transition"
                 )
             if current in diverted:
                 raise Escalation(
@@ -84,8 +82,6 @@ def _run_nodes(name: str, workflow: dict[str, Any], run_input: str) -> None:
         current = node["transitions"][outcome]
 
 
-def _write_state(
-    workflow: str, run_input: str, node: str, visits: dict[str, int]
-) -> None:
+def _write_state(workflow: str, run_input: str, node: str, visits: dict[str, int]) -> None:
     state = {"workflow": workflow, "input": run_input, "node": node, "visits": visits}
     STATE_FILE.write_text(json.dumps(state))
