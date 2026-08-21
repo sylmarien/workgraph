@@ -24,27 +24,20 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="workgraph",
-        description="Graph workflow orchestrator.",
-    )
+    parser = argparse.ArgumentParser(prog="workgraph", description="Graph workflow orchestrator.")
     subparsers = parser.add_subparsers(dest="command")
     _add_run_parser(subparsers)
     _add_viz_parser(subparsers)
     return parser
 
 
-def _add_run_parser(
-    subparsers: "argparse._SubParsersAction[argparse.ArgumentParser]",
-) -> None:
+def _add_run_parser(subparsers: "argparse._SubParsersAction[argparse.ArgumentParser]") -> None:
     run = subparsers.add_parser("run", help="Run a workflow.")
     run.add_argument("workflow", help="Workflow name.")
     run.add_argument("input", help="Run input, typically an issue ref.")
 
 
-def _add_viz_parser(
-    subparsers: "argparse._SubParsersAction[argparse.ArgumentParser]",
-) -> None:
+def _add_viz_parser(subparsers: "argparse._SubParsersAction[argparse.ArgumentParser]") -> None:
     viz = subparsers.add_parser("viz", help="Print a workflow graph.")
     viz.add_argument("workflow", help="Workflow name.")
     style = viz.add_mutually_exclusive_group()

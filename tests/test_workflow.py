@@ -89,15 +89,9 @@ def test_unknown_workflow_is_an_error(dirs: tuple[Path, Path]) -> None:
 
 
 BAD = [
+    pytest.param(MINIMAL.replace('start = "check"', "start ="), "invalid TOML", id="invalid-toml"),
     pytest.param(
-        MINIMAL.replace('start = "check"', "start ="),
-        "invalid TOML",
-        id="invalid-toml",
-    ),
-    pytest.param(
-        MINIMAL.replace('start = "check"', ""),
-        "missing top-level 'start'",
-        id="missing-start",
+        MINIMAL.replace('start = "check"', ""), "missing top-level 'start'", id="missing-start"
     ),
     pytest.param(
         MINIMAL.replace('start = "check"', 'start = "ghost"'),
@@ -152,8 +146,7 @@ BAD = [
     pytest.param(
         MINIMAL.replace(
             'command = "true"',
-            'agent = "worker"\noutcomes = ["pass", "fail"]\n'
-            'harness = "claude"\nmodel = "opus"',
+            'agent = "worker"\noutcomes = ["pass", "fail"]\nharness = "claude"\nmodel = "opus"',
         ),
         "node 'check': 'effort' is set neither on the node nor in [defaults]",
         id="unresolved-setting",
@@ -161,8 +154,7 @@ BAD = [
     pytest.param(
         MINIMAL.replace(
             'command = "true"',
-            'agent = "worker"\noutcomes = ["pass", "fail"]\n'
-            'harness = "codex"\nmodel = "opus"\neffort = "high"',
+            'agent = "worker"\noutcomes = ["pass", "fail"]\nharness = "codex"\nmodel = "opus"\neffort = "high"',
         ),
         "node 'check': harness 'codex' is not supported",
         id="unsupported-harness",

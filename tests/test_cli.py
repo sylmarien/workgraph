@@ -17,17 +17,13 @@ def project(dirs: tuple[Path, Path]) -> Path:
     return project
 
 
-def test_no_arguments_prints_help_and_returns_zero(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
+def test_no_arguments_prints_help_and_returns_zero(capsys: pytest.CaptureFixture[str]) -> None:
     assert main([]) == 0
     assert "workgraph" in capsys.readouterr().out
 
 
 def test_console_script_prints_help_and_exits_zero() -> None:
-    result = subprocess.run(
-        ["workgraph", "--help"], capture_output=True, text=True, check=False
-    )
+    result = subprocess.run(["workgraph", "--help"], capture_output=True, text=True, check=False)
     assert result.returncode == 0
     assert "workgraph" in result.stdout
 
@@ -59,9 +55,7 @@ def test_viz_style_flags_are_mutually_exclusive(
     assert "not allowed with" in capsys.readouterr().err
 
 
-def test_viz_ascii_prints_ascii_only(
-    project: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_viz_ascii_prints_ascii_only(project: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["viz", "--ascii", "build"]) == 0
     out = capsys.readouterr().out
     assert out.isascii()
