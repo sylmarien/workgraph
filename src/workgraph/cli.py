@@ -2,10 +2,19 @@
 
 import argparse
 import sys
+from collections.abc import Callable
 
 from termaid import render
 
-from workgraph.run import Escalation, NodeFailure, RunInProgress, run_workflow
+from workgraph.run import (
+    Escalation,
+    NodeFailure,
+    NothingToResume,
+    RunInProgress,
+    load_state,
+    resume_run,
+    run_workflow,
+)
 from workgraph.workflow import WorkflowError, load_workflow, to_mermaid
 
 
@@ -16,6 +25,8 @@ def main(argv: list[str] | None = None) -> int:
     match args.command:
         case "run":
             return _run(args)
+        case "resume":
+            return _resume()
         case "viz":
             return _viz(args)
         case _:
@@ -27,6 +38,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="workgraph", description="Graph workflow orchestrator.")
     subparsers = parser.add_subparsers(dest="command")
     _add_run_parser(subparsers)
+    subparsers.add_parser("resume", help="Resume a stopped run at the node where it stopped.")
     _add_viz_parser(subparsers)
     return parser
 
@@ -66,10 +78,24 @@ def _add_viz_parser(subparsers: "argparse._SubParsersAction[argparse.ArgumentPar
 
 
 def _run(args: argparse.Namespace) -> int:
+    def action() -> None:
+        run_workflow(args.workflow, load_workflow(args.workflow), args.input)
+
+    return _report(action)
+
+
+def _resume() -> int:
+    def action() -> None:
+        state = load_state()
+        resume_run(load_workflow(state["workflow"]), state)
+
+    return _report(action)
+
+
+def _report(action: Callable[[], None]) -> int:
     try:
-        workflow = load_workflow(args.workflow)
-        run_workflow(args.workflow, workflow, args.input)
-    except (WorkflowError, RunInProgress) as error:
+        action()
+    except (WorkflowError, RunInProgress, NothingToResume) as error:
         print(error, file=sys.stderr)
         return 1
     except NodeFailure as error:

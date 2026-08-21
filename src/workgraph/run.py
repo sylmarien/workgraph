@@ -3,6 +3,8 @@
 import json
 import shlex
 import subprocess
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +16,10 @@ LOCK_FILE = Path(".workgraph") / "run.lock"
 
 class RunInProgress(Exception):
     """Another run holds this working directory; only one run may."""
+
+
+class NothingToResume(Exception):
+    """There is no stopped run to resume."""
 
 
 class NodeFailure(Exception):
@@ -31,6 +37,45 @@ def run_workflow(name: str, workflow: dict[str, Any], run_input: str) -> None:
     in the working directory after each node run. Holds LOCK_FILE for the
     whole run; one run per working directory.
     """
+    with _lock():
+        _run_nodes(name, workflow, run_input, workflow["start"], {}, None)
+
+
+def load_state() -> dict[str, Any]:
+    """Read the run state from STATE_FILE.
+
+    load_state raises NothingToResume when no state file exists or the run reached END.
+    """
+    try:
+        state: dict[str, Any] = json.loads(STATE_FILE.read_text())
+    except FileNotFoundError:
+        raise NothingToResume(f"no run state at {STATE_FILE}; nothing to resume") from None
+    if state["node"] == END:
+        raise NothingToResume("the run reached END; nothing to resume")
+    return state
+
+
+def resume_run(workflow: dict[str, Any], state: dict[str, Any]) -> None:
+    """Resume the stopped run at the node where its saved state says it stopped.
+
+    The first re-entry (the grace entry) does not count toward the visit limit.
+    resume_run delivers an undelivered handoff to the resumed node.
+    """
+    handoff = state.get("handoff")
+    with _lock():
+        _run_nodes(
+            state["workflow"],
+            workflow,
+            state["input"],
+            state["node"],
+            state["visits"],
+            tuple(handoff) if handoff else None,
+            grace=True,
+        )
+
+
+@contextmanager
+def _lock() -> Iterator[None]:
     STATE_FILE.parent.mkdir(exist_ok=True)
     try:
         # ponytail: a killed process leaves a stale lock; store a pid if this bites.
@@ -40,27 +85,34 @@ def run_workflow(name: str, workflow: dict[str, Any], run_input: str) -> None:
             f"a run is already in progress in this directory; delete {LOCK_FILE} if it is stale"
         ) from None
     try:
-        _run_nodes(name, workflow, run_input)
+        yield
     finally:
         LOCK_FILE.unlink()
 
 
-def _run_nodes(name: str, workflow: dict[str, Any], run_input: str) -> None:
+def _run_nodes(
+    name: str,
+    workflow: dict[str, Any],
+    run_input: str,
+    current: str,
+    visits: dict[str, int],
+    handoff: tuple[str, str] | None,
+    grace: bool = False,
+) -> None:
     nodes = workflow["nodes"]
     defaults = workflow.get("defaults", {})
-    visits: dict[str, int] = {}
     diverted: set[str] = set()
-    handoff: tuple[str, str] | None = None
-    current = workflow["start"]
     while current != END:
         node = nodes[current]
         limit = node.get("limits", {}).get("visits")
-        if limit is not None and visits.get(current, 0) >= limit:
+        if not grace and limit is not None and visits.get(current, 0) >= limit:
             if LIMIT not in node["transitions"]:
+                _write_state(name, run_input, current, visits, handoff)
                 raise Escalation(
                     f"node '{current}' reached its visit limit of {limit} and has no LIMIT transition"
                 )
             if current in diverted:
+                _write_state(name, run_input, current, visits, handoff)
                 raise Escalation(
                     f"node '{current}' reached its visit limit of {limit}"
                     " and its LIMIT transitions loop without running a node"
@@ -69,7 +121,10 @@ def _run_nodes(name: str, workflow: dict[str, Any], run_input: str) -> None:
             current = node["transitions"][LIMIT]
             continue
         diverted.clear()
-        visits[current] = visits.get(current, 0) + 1
+        if grace:
+            grace = False
+        else:
+            visits[current] = visits.get(current, 0) + 1
         try:
             if "agent" in node:
                 outcome, handoff_text = _run_agent(current, node, defaults, run_input, handoff)
@@ -84,6 +139,7 @@ def _run_nodes(name: str, workflow: dict[str, Any], run_input: str) -> None:
         handoff = (current, handoff_text) if handoff_text is not None and target != END else None
         _write_state(name, run_input, current, visits, handoff)
         current = target
+    _write_state(name, run_input, END, visits, None)
 
 
 def _run_command(name: str, node: dict[str, Any]) -> str:
@@ -208,6 +264,5 @@ def _write_state(
         "visits": visits,
     }
     if handoff is not None:
-        # ponytail: stores the text only; add the source node when resume (#15) rebuilds the label.
-        state["handoff"] = handoff[1]
+        state["handoff"] = list(handoff)
     STATE_FILE.write_text(json.dumps(state))
