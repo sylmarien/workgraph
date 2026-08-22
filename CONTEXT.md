@@ -9,7 +9,7 @@ A named directed graph of nodes with one start node. Loops are allowed.
 _Avoid_: Pipeline, flow, DAG
 
 **Node**:
-A workflow-local binding of one agent definition or command to outcomes, transitions, and limits.
+A workflow-local binding of one agent definition, command, or fan-out to outcomes, transitions, and limits.
 _Avoid_: Step, stage, state
 
 **Agent node**:
@@ -18,6 +18,10 @@ A node that runs an agent. It references an agent definition by name and declare
 **Command node**:
 A node that runs a command. The node reports `pass` when the command exits with code 0 and `fail` otherwise.
 _Avoid_: Check node, deterministic check
+
+**Map node**:
+A node that fans out to a fixed set of nodes, runs them in parallel, and resolves its own `pass`/`fail` outcome from theirs: `all` requires every fanned-out node to report `pass`, `any` requires at least one. A fanned-out node's failure counts as not passing; it never stops the run.
+_Avoid_: MapReduce node, parallel node
 
 **Agent definition**:
 The specification of the agent an agent node runs, written in the harness's native format and shared across workflows.
