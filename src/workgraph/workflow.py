@@ -27,8 +27,13 @@ def load_workflow(name: str) -> dict[str, Any]:
 
 
 def to_mermaid(workflow: dict[str, Any]) -> str:
-    """Render a validated workflow as a bare mermaid flowchart."""
-    lines = ["flowchart TD"]
+    """Render a validated workflow as a bare mermaid flowchart.
+
+    The start node is drawn as a stadium shape so every viz style
+    (unicode, ascii, mermaid) marks where a run begins.
+    """
+    start = workflow["start"]
+    lines = ["flowchart TD", f"    {start}([{start}])"]
     for name, node in workflow["nodes"].items():
         for outcome, target in node["transitions"].items():
             lines.append(f"    {name} -->|{outcome}| {target}")
