@@ -60,6 +60,39 @@ def test_valid_workflow_renders_expected_mermaid(dirs: tuple[Path, Path]) -> Non
     assert to_mermaid(load_workflow("build")) == VALID_MERMAID
 
 
+MAPPED = """
+start = "checks"
+
+[nodes.checks]
+map = ["lint", "typecheck"]
+resolve = "all"
+
+[nodes.checks.transitions]
+pass = "END"
+fail = "END"
+
+[nodes.lint]
+command = "true"
+
+[nodes.typecheck]
+command = "true"
+"""
+
+MAPPED_MERMAID = """\
+flowchart TD
+    checks([checks])
+    checks --> lint
+    checks --> typecheck
+    checks -->|pass| END
+    checks -->|fail| END"""
+
+
+def test_map_workflow_renders_fan_out_edges(dirs: tuple[Path, Path]) -> None:
+    project, _ = dirs
+    write(project, "mapped", MAPPED)
+    assert to_mermaid(load_workflow("mapped")) == MAPPED_MERMAID
+
+
 START_NOT_FIRST = """
 start = "second"
 
@@ -138,12 +171,12 @@ BAD = [
     ),
     pytest.param(
         MINIMAL.replace('command = "true"', 'command = "true"\nagent = "worker"'),
-        "node 'check': declare exactly one of 'agent' or 'command'",
+        "node 'check': declare exactly one of 'agent', 'command', or 'map'",
         id="agent-and-command",
     ),
     pytest.param(
         MINIMAL.replace('command = "true"', ""),
-        "node 'check': declare exactly one of 'agent' or 'command'",
+        "node 'check': declare exactly one of 'agent', 'command', or 'map'",
         id="neither-agent-nor-command",
     ),
     pytest.param(
@@ -211,6 +244,94 @@ BAD = [
         MINIMAL.replace('fail = "END"', 'fail = "LIMIT"'),
         "node 'check': transition target 'LIMIT' does not exist",
         id="limit-as-transition-target",
+    ),
+    pytest.param(
+        MAPPED.replace(
+            'map = ["lint", "typecheck"]', 'map = ["lint", "typecheck"]\ncommand = "true"'
+        ),
+        "node 'checks': declare exactly one of 'agent', 'command', or 'map'",
+        id="map-and-command",
+    ),
+    pytest.param(
+        MAPPED.replace('map = ["lint", "typecheck"]', "map = []"),
+        "node 'checks': 'map' must list at least one node",
+        id="empty-map",
+    ),
+    pytest.param(
+        MAPPED.replace('resolve = "all"', 'resolve = "some"'),
+        "node 'checks': 'resolve' must be 'any' or 'all'",
+        id="invalid-resolve",
+    ),
+    pytest.param(
+        MAPPED.replace('resolve = "all"', ""),
+        "node 'checks': 'resolve' must be 'any' or 'all'",
+        id="missing-resolve",
+    ),
+    pytest.param(
+        MAPPED.replace('resolve = "all"', 'resolve = "all"\noutcomes = ["pass"]'),
+        "node 'checks': a map node cannot declare 'outcomes'",
+        id="outcomes-on-map-node",
+    ),
+    pytest.param(
+        MAPPED.replace('resolve = "all"', 'resolve = "all"\nmodel = "opus"'),
+        "node 'checks': a map node cannot declare 'model'",
+        id="setting-on-map-node",
+    ),
+    pytest.param(
+        MAPPED.replace('"typecheck"]', '"ghost"]'),
+        "node 'checks': fanned-out node 'ghost' does not exist",
+        id="fanned-out-node-missing",
+    ),
+    pytest.param(
+        MAPPED.replace(
+            '[nodes.typecheck]\ncommand = "true"',
+            '[nodes.typecheck]\nmap = ["extra"]\nresolve = "all"\n\n[nodes.extra]\ncommand = "true"',
+        ),
+        "node 'checks': fanned-out node 'typecheck' is itself a map node",
+        id="map-node-fanned-out",
+    ),
+    pytest.param(
+        MAPPED
+        + """
+[nodes.rechecks]
+map = ["lint"]
+resolve = "any"
+
+[nodes.rechecks.transitions]
+pass = "END"
+fail = "END"
+""",
+        "node 'rechecks': fanned-out node 'lint' is already fanned out by map node 'checks'",
+        id="fanned-out-twice",
+    ),
+    pytest.param(
+        MAPPED + '\n[nodes.lint.transitions]\npass = "END"\nfail = "END"\n',
+        "node 'lint': a fanned-out node cannot declare 'transitions'",
+        id="transitions-on-fanned-out-node",
+    ),
+    pytest.param(
+        MAPPED + "\n[nodes.lint.limits]\nvisits = 2\n",
+        "node 'lint': a fanned-out node cannot declare 'limits'",
+        id="limits-on-fanned-out-node",
+    ),
+    pytest.param(
+        MAPPED.replace(
+            '[nodes.lint]\ncommand = "true"',
+            '[nodes.lint]\nagent = "linter"\noutcomes = ["done"]\n'
+            'harness = "claude"\nmodel = "opus"\neffort = "high"',
+        ),
+        "node 'lint': a fanned-out node must have 'pass' in its outcomes",
+        id="fanned-out-node-without-pass",
+    ),
+    pytest.param(
+        MAPPED.replace('fail = "END"', 'fail = "lint"'),
+        "node 'checks': transition target 'lint' is fanned out by map node 'checks'",
+        id="fanned-out-node-as-transition-target",
+    ),
+    pytest.param(
+        MAPPED.replace('start = "checks"', 'start = "lint"'),
+        "start node 'lint' is fanned out by map node 'checks'",
+        id="fanned-out-node-as-start",
     ),
 ]
 

@@ -35,7 +35,9 @@ def to_mermaid(workflow: dict[str, Any]) -> str:
     start = workflow["start"]
     lines = ["flowchart TD", f"    {start}([{start}])"]
     for name, node in workflow["nodes"].items():
-        for outcome, target in node["transitions"].items():
+        for child in node.get("map", []):
+            lines.append(f"    {name} --> {child}")
+        for outcome, target in node.get("transitions", {}).items():
             lines.append(f"    {name} -->|{outcome}| {target}")
     return "\n".join(lines)
 
@@ -58,15 +60,44 @@ def _validate(workflow_name: str, data: dict[str, Any]) -> None:
         raise WorkflowError(f"{workflow_name}: missing top-level 'start'")
     if start not in nodes:
         raise WorkflowError(f"{workflow_name}: start node '{start}' does not exist")
+    mapped = _collect_mapped(workflow_name, nodes)
+    if start in mapped:
+        raise WorkflowError(
+            f"{workflow_name}: start node '{start}' is fanned out by map node '{mapped[start]}'"
+        )
     defaults = data.get("defaults", {})
     for name, node in nodes.items():
-        _validate_node(workflow_name, nodes, defaults, name, node)
+        _validate_node(workflow_name, nodes, defaults, mapped, name, node)
+
+
+def _collect_mapped(workflow_name: str, nodes: dict[str, Any]) -> dict[str, str]:
+    """Map each fanned-out node to its map node, checking the fan-out lists."""
+    mapped: dict[str, str] = {}
+    for name, node in nodes.items():
+        for child in node.get("map", []):
+            if child not in nodes:
+                raise WorkflowError(
+                    f"{workflow_name}: node '{name}': fanned-out node '{child}' does not exist"
+                )
+            if "map" in nodes[child]:
+                raise WorkflowError(
+                    f"{workflow_name}: node '{name}': fanned-out node '{child}'"
+                    " is itself a map node"
+                )
+            if child in mapped:
+                raise WorkflowError(
+                    f"{workflow_name}: node '{name}': fanned-out node '{child}'"
+                    f" is already fanned out by map node '{mapped[child]}'"
+                )
+            mapped[child] = name
+    return mapped
 
 
 def _validate_node(
     workflow_name: str,
     nodes: dict[str, Any],
     defaults: dict[str, Any],
+    mapped: dict[str, str],
     name: str,
     node: dict[str, Any],
 ) -> None:
@@ -75,14 +106,20 @@ def _validate_node(
 
     if name in RESERVED_NAMES:
         fail(f"'{name}' is reserved and cannot name a node")
-    if ("agent" in node) == ("command" in node):
-        fail("declare exactly one of 'agent' or 'command'")
-    if "command" in node:
+    if sum(kind in node for kind in ("agent", "command", "map")) != 1:
+        fail("declare exactly one of 'agent', 'command', or 'map'")
+    if "command" in node or "map" in node:
+        kind = "command" if "command" in node else "map"
         if "outcomes" in node:
-            fail("a command node cannot declare 'outcomes'")
+            fail(f"a {kind} node cannot declare 'outcomes'")
         for setting in SETTINGS:
             if setting in node:
-                fail(f"a command node cannot declare '{setting}'")
+                fail(f"a {kind} node cannot declare '{setting}'")
+        if kind == "map":
+            if not node["map"]:
+                fail("'map' must list at least one node")
+            if node.get("resolve") not in ("any", "all"):
+                fail("'resolve' must be 'any' or 'all'")
         outcomes = ["pass", "fail"]
     else:
         outcomes = node.get("outcomes", [])
@@ -98,6 +135,13 @@ def _validate_node(
         harness = settings["harness"]
         if harness != "claude":
             fail(f"harness '{harness}' is not supported; only 'claude' is accepted")
+    if name in mapped:
+        for field in ("transitions", "limits"):
+            if field in node:
+                fail(f"a fanned-out node cannot declare '{field}'")
+        if "pass" not in outcomes:
+            fail("a fanned-out node must have 'pass' in its outcomes")
+        return
     transitions = node.get("transitions", {})
     for outcome in outcomes:
         if outcome not in transitions:
@@ -107,3 +151,5 @@ def _validate_node(
             fail(f"transition key '{key}' is not an outcome of the node")
         if target != END and target not in nodes:
             fail(f"transition target '{target}' does not exist")
+        if target in mapped:
+            fail(f"transition target '{target}' is fanned out by map node '{mapped[target]}'")
