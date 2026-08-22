@@ -35,6 +35,7 @@ def test_viz_prints_unicode_box_drawing_by_default(
     out = capsys.readouterr().out
     assert not out.isascii()
     assert "check" in out
+    assert "(  check  )" in out
 
 
 def test_viz_unicode_flag_matches_the_default(
@@ -60,6 +61,7 @@ def test_viz_ascii_prints_ascii_only(project: Path, capsys: pytest.CaptureFixtur
     out = capsys.readouterr().out
     assert out.isascii()
     assert "check" in out
+    assert "(  check  )" in out
 
 
 def test_viz_mermaid_prints_mermaid_source(
@@ -68,6 +70,7 @@ def test_viz_mermaid_prints_mermaid_source(
     assert main(["viz", "--mermaid", "build"]) == 0
     out = capsys.readouterr().out
     assert out.startswith("flowchart TD\n")
+    assert "    check([check])" in out
     assert "    check -->|pass| END" in out
 
 

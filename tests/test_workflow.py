@@ -45,6 +45,7 @@ changes_requested = "implement"
 
 VALID_MERMAID = """\
 flowchart TD
+    implement([implement])
     implement -->|done| test
     implement -->|LIMIT| END
     test -->|pass| review
@@ -57,6 +58,32 @@ def test_valid_workflow_renders_expected_mermaid(dirs: tuple[Path, Path]) -> Non
     project, _ = dirs
     write(project, "build", VALID)
     assert to_mermaid(load_workflow("build")) == VALID_MERMAID
+
+
+START_NOT_FIRST = """
+start = "second"
+
+[nodes.first]
+command = "true"
+
+[nodes.first.transitions]
+pass = "END"
+fail = "END"
+
+[nodes.second]
+command = "true"
+
+[nodes.second.transitions]
+pass = "END"
+fail = "END"
+"""
+
+
+def test_start_node_is_marked_even_when_declared_second(dirs: tuple[Path, Path]) -> None:
+    project, _ = dirs
+    write(project, "build", START_NOT_FIRST)
+    mermaid = to_mermaid(load_workflow("build"))
+    assert mermaid.splitlines()[1] == "    second([second])"
 
 
 def test_project_workflow_shadows_global(dirs: tuple[Path, Path]) -> None:
