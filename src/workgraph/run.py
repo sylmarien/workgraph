@@ -201,9 +201,11 @@ def _agent_argv(
     agents = {
         agent: {"description": definition.get("description", ""), "prompt": definition["prompt"]}
     }
+    # No --bare: bare mode reads no OAuth credentials, so agent nodes cannot
+    # authenticate for subscription users. Accepted cost: hooks and plugins
+    # load on every spawn.
     command = [
         "claude",
-        "--bare",
         "-p",
         prompt,
         "--output-format",

@@ -376,7 +376,7 @@ def test_spawn_flags_follow_the_decisions(
     assert main(["run", "agents", "issue #9"]) == 0
     assert capsys.readouterr().out == "plan: done\n"
     [args] = spawn_args(project)
-    assert args[0] == "--bare"
+    assert "--bare" not in args
     assert flag_value(args, "-p") == "issue #9"
     assert flag_value(args, "--output-format") == "json"
     schema = json.loads(flag_value(args, "--json-schema"))
