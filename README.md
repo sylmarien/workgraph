@@ -36,6 +36,22 @@ Requires Python 3.12+. Agent nodes additionally require the `claude` CLI on
 - `workgraph viz <workflow>` — print the workflow graph. `--unicode`
   (default), `--ascii`, or `--mermaid` for the mermaid source.
 
+Every subcommand takes `--directory <dir>` ahead of it:
+`workgraph --directory <dir> run <workflow> "<input>"`. The flag separates
+resolution from execution:
+
+- `workgraph` resolves the workflow TOML and the agent definitions from the
+  invocation directory.
+- Nodes execute in `<dir>`, and the run state (`run.json`, `run.lock`) is
+  stored there.
+- `resume` reads the state from `<dir>` and re-resolves the workflow from the
+  invocation directory, so a run resumes from the directory it was started
+  from.
+- `viz` accepts the flag and ignores it: it only resolves files.
+
+Without the flag, both directories are the current directory. `workgraph`
+can therefore run one directory's workflows in another directory.
+
 A run prints one line per node run: `<node>: <outcome>`, or `<node>: failure`.
 Exit codes:
 
@@ -53,9 +69,9 @@ that reached `END` cannot be resumed.
 ## Workflow files
 
 A workflow lives in `.workgraph/<name>.toml`; the filename is the workflow
-name. `workgraph` searches the working directory, its parents, then the home
-directory, and takes the first match. A project workflow therefore shadows a
-personal one of the same name. `.workgraph/dev.toml` in this repository is a
+name. `workgraph` searches the invocation directory, then the home directory,
+and takes the first match. A project workflow therefore shadows a personal
+one of the same name. `.workgraph/dev.toml` in this repository is a
 full three-node example; the reference below uses two nodes.
 
 ```toml
@@ -103,7 +119,7 @@ Rules, all validated at load time:
 ## Agent definitions
 
 An agent node references an agent definition by name: a Claude Code subagent
-file at `.claude/agents/<name>.md` in the working directory or the home
+file at `.claude/agents/<name>.md` in the invocation directory or the home
 directory, in that order. The file is harness-native and carries no workflow
 contract, so the same agent works interactively and inside workflows.
 
@@ -140,16 +156,19 @@ description: >
   /workgraph <workflow> [directory] <input...>.
 ---
 Arguments: the first is the workflow name. If the second names an existing
-directory, cd there for the run. Everything remaining is the run input,
+directory, pass it as `--directory`. Everything remaining is the run input,
 passed verbatim as one argument.
 
-1. Launch the run in the background: `workgraph run <workflow> "<input>"`
-   (prefixed with `cd <directory> && ` when a directory was given).
+1. Launch the run in the background:
+   `workgraph run <workflow> "<input>"`, with
+   `--directory <directory>` before `run` when a directory was given.
+   Never cd: `--directory` keeps workflow and agent file resolution in the
+   session's directory while the run executes in the target.
 2. Relay each progress line (`<node>: <outcome>`) as it appears.
 3. On stop, report by exit code:
    - 0: the run reached END.
    - 2 (failure) or 3 (escalation): the stopped node and the error line;
-     offer to run `workgraph resume` in the same directory.
+     offer to run `workgraph resume` with the same `--directory`.
    - 1: the error line. Nothing is resumable.
 ````
 

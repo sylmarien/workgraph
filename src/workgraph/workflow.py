@@ -41,16 +41,13 @@ def to_mermaid(workflow: dict[str, Any]) -> str:
 
 
 def _find(name: str) -> Path:
-    cwd = Path.cwd()
-    # ponytail: home appears twice when it is a cwd ancestor; harmless for a
-    # first-match lookup, dedupe when workflow listing enumerates these dirs.
-    for base in (cwd, *cwd.parents, Path.home()):
+    for base in (Path.cwd(), Path.home()):
         path = base / ".workgraph" / f"{name}.toml"
         if path.is_file():
             return path
     raise WorkflowError(
-        f"workflow '{name}' not found in a .workgraph directory of the working directory,"
-        " its parents, or the home directory"
+        f"workflow '{name}' not found in a .workgraph directory of the invocation directory"
+        " or the home directory"
     )
 
 

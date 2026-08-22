@@ -15,7 +15,7 @@ LOCK_FILE = Path(".workgraph") / "run.lock"
 
 
 class RunInProgress(Exception):
-    """Another run holds this working directory; only one run may."""
+    """Another run holds the target directory; only one run may."""
 
 
 class NothingToResume(Exception):
@@ -30,39 +30,41 @@ class Escalation(Exception):
     """A node hit its visit limit and has no LIMIT transition; the run stops."""
 
 
-def run_workflow(name: str, workflow: dict[str, Any], run_input: str) -> None:
+def run_workflow(name: str, workflow: dict[str, Any], run_input: str, directory: Path) -> None:
     """Run the workflow from its start node until END, a failure, or an escalation.
 
-    Prints one progress line per node run. Writes the run state to STATE_FILE
-    in the working directory after each node run. Holds LOCK_FILE for the
-    whole run; one run per working directory.
+    Nodes execute in directory, where the run state is written to STATE_FILE
+    after each node run. Prints one progress line per node run. Holds
+    LOCK_FILE in directory for the whole run; one run per directory.
     """
-    with _lock():
-        _run_nodes(name, workflow, run_input, workflow["start"], {}, None)
+    with _lock(directory):
+        _run_nodes(name, workflow, run_input, workflow["start"], {}, None, directory)
 
 
-def load_state() -> dict[str, Any]:
-    """Read the run state from STATE_FILE.
+def load_state(directory: Path) -> dict[str, Any]:
+    """Read the run state from STATE_FILE in directory.
 
     load_state raises NothingToResume when no state file exists or the run reached END.
     """
     try:
-        state: dict[str, Any] = json.loads(STATE_FILE.read_text())
+        state: dict[str, Any] = json.loads((directory / STATE_FILE).read_text())
     except FileNotFoundError:
-        raise NothingToResume(f"no run state at {STATE_FILE}; nothing to resume") from None
+        raise NothingToResume(
+            f"no run state at {directory / STATE_FILE}; nothing to resume"
+        ) from None
     if state["node"] == END:
         raise NothingToResume("the run reached END; nothing to resume")
     return state
 
 
-def resume_run(workflow: dict[str, Any], state: dict[str, Any]) -> None:
+def resume_run(workflow: dict[str, Any], state: dict[str, Any], directory: Path) -> None:
     """Resume the stopped run at the node where its saved state says it stopped.
 
     The first re-entry (the grace entry) does not count toward the visit limit.
     resume_run delivers an undelivered handoff to the resumed node.
     """
     handoff = state.get("handoff")
-    with _lock():
+    with _lock(directory):
         _run_nodes(
             state["workflow"],
             workflow,
@@ -70,24 +72,26 @@ def resume_run(workflow: dict[str, Any], state: dict[str, Any]) -> None:
             state["node"],
             state["visits"],
             tuple(handoff) if handoff else None,
+            directory,
             grace=True,
         )
 
 
 @contextmanager
-def _lock() -> Iterator[None]:
-    STATE_FILE.parent.mkdir(exist_ok=True)
+def _lock(directory: Path) -> Iterator[None]:
+    lock = directory / LOCK_FILE
+    lock.parent.mkdir(exist_ok=True)
     try:
         # ponytail: a killed process leaves a stale lock; store a pid if this bites.
-        LOCK_FILE.touch(exist_ok=False)
+        lock.touch(exist_ok=False)
     except FileExistsError:
         raise RunInProgress(
-            f"a run is already in progress in this directory; delete {LOCK_FILE} if it is stale"
+            f"a run is already in progress in {directory}; delete {lock} if it is stale"
         ) from None
     try:
         yield
     finally:
-        LOCK_FILE.unlink()
+        lock.unlink()
 
 
 def _run_nodes(
@@ -97,6 +101,7 @@ def _run_nodes(
     current: str,
     visits: dict[str, int],
     handoff: tuple[str, str] | None,
+    directory: Path,
     grace: bool = False,
 ) -> None:
     nodes = workflow["nodes"]
@@ -107,12 +112,12 @@ def _run_nodes(
         limit = node.get("limits", {}).get("visits")
         if not grace and limit is not None and visits.get(current, 0) >= limit:
             if LIMIT not in node["transitions"]:
-                _write_state(name, run_input, current, visits, handoff)
+                _write_state(name, run_input, current, visits, handoff, directory)
                 raise Escalation(
                     f"node '{current}' reached its visit limit of {limit} and has no LIMIT transition"
                 )
             if current in diverted:
-                _write_state(name, run_input, current, visits, handoff)
+                _write_state(name, run_input, current, visits, handoff, directory)
                 raise Escalation(
                     f"node '{current}' reached its visit limit of {limit}"
                     " and its LIMIT transitions loop without running a node"
@@ -127,24 +132,26 @@ def _run_nodes(
             visits[current] = visits.get(current, 0) + 1
         try:
             if "agent" in node:
-                outcome, handoff_text = _run_agent(current, node, defaults, run_input, handoff)
+                outcome, handoff_text = _run_agent(
+                    current, node, defaults, run_input, handoff, directory
+                )
             else:
-                outcome, handoff_text = _run_command(current, node), None
+                outcome, handoff_text = _run_command(current, node, directory), None
         except NodeFailure:
             print(f"{current}: failure", flush=True)
-            _write_state(name, run_input, current, visits, handoff)
+            _write_state(name, run_input, current, visits, handoff, directory)
             raise
         print(f"{current}: {outcome}", flush=True)
         target = node["transitions"][outcome]
         handoff = (current, handoff_text) if handoff_text is not None and target != END else None
-        _write_state(name, run_input, current, visits, handoff)
+        _write_state(name, run_input, current, visits, handoff, directory)
         current = target
-    _write_state(name, run_input, END, visits, None)
+    _write_state(name, run_input, END, visits, None, directory)
 
 
-def _run_command(name: str, node: dict[str, Any]) -> str:
+def _run_command(name: str, node: dict[str, Any], directory: Path) -> str:
     try:
-        completed = subprocess.run(shlex.split(node["command"]), check=False)
+        completed = subprocess.run(shlex.split(node["command"]), check=False, cwd=directory)
     except (OSError, ValueError, IndexError) as error:
         raise NodeFailure(f"node '{name}': spawn failure: {error}") from error
     return "pass" if completed.returncode == 0 else "fail"
@@ -156,7 +163,10 @@ def _run_agent(
     defaults: dict[str, Any],
     run_input: str,
     handoff: tuple[str, str] | None,
+    directory: Path,
 ) -> tuple[str, str | None]:
+    # The definition resolves from the invocation directory (the process cwd);
+    # only the spawned agent executes in the target directory.
     definition = _load_agent_definition(name, node["agent"])
     prompt = run_input
     if handoff is not None:
@@ -164,7 +174,9 @@ def _run_agent(
         prompt = f"{run_input}\n\nHandoff from {source}:\n{text}"
     command = _agent_argv(node, defaults, definition, prompt)
     try:
-        completed = subprocess.run(command, check=False, capture_output=True, text=True)
+        completed = subprocess.run(
+            command, check=False, capture_output=True, text=True, cwd=directory
+        )
     except OSError as error:
         raise NodeFailure(f"node '{name}': spawn failure: {error}") from error
     if completed.returncode != 0:
@@ -235,7 +247,7 @@ def _load_agent_definition(node_name: str, agent: str) -> dict[str, str]:
             return _parse_agent_definition(path.read_text())
     raise NodeFailure(
         f"node '{node_name}': agent definition '{agent}' not found in .claude/agents"
-        " of the working directory or the home directory"
+        " of the invocation directory or the home directory"
     )
 
 
@@ -258,6 +270,7 @@ def _write_state(
     node: str,
     visits: dict[str, int],
     handoff: tuple[str, str] | None,
+    directory: Path,
 ) -> None:
     state: dict[str, Any] = {
         "workflow": workflow,
@@ -267,4 +280,4 @@ def _write_state(
     }
     if handoff is not None:
         state["handoff"] = list(handoff)
-    STATE_FILE.write_text(json.dumps(state))
+    (directory / STATE_FILE).write_text(json.dumps(state))

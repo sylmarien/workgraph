@@ -268,7 +268,7 @@ def test_a_second_run_in_the_same_directory_is_rejected(
     assert main(["run", "spin", "input"]) == 1
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert "a run is already in progress in this directory" in captured.err
+    assert "a run is already in progress" in captured.err
     assert LOCK_FILE.exists()
 
 
@@ -581,6 +581,56 @@ def test_undelivered_handoff_is_delivered_on_resume(
         "issue #9\n\nHandoff from plan:\nSplit the work in two.",
     ]
     assert read_state()["visits"] == {"plan": 1, "build": 1}
+
+
+@pytest.fixture
+def target(dirs: tuple[Path, Path]) -> Path:
+    """Create a target directory next to the project dir."""
+    project, _ = dirs
+    directory = project.parent / "target"
+    directory.mkdir()
+    return directory
+
+
+def test_directory_executes_and_stores_state_in_the_target(
+    dirs: tuple[Path, Path], target: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    write(project, "mark", LOOP.replace("test -f flag", "test -f flag && touch marker"))
+    assert main(["--directory", str(target), "run", "mark", "input"]) == 0
+    assert capsys.readouterr().out == "check: fail\ncheck: pass\n"
+    assert (target / "marker").exists()
+    assert not (project / "marker").exists()
+    assert json.loads((target / STATE_FILE).read_text())["node"] == "END"
+    assert not (project / STATE_FILE).exists()
+    assert not (target / LOCK_FILE).exists()
+
+
+def test_directory_agents_resolve_from_invocation_and_run_in_the_target(
+    dirs: tuple[Path, Path], target: Path, fake_claude: None
+) -> None:
+    project, _ = dirs
+    write(project, "agents", AGENT)
+    write_agent(project, "planner", PLANNER)
+    respond(target, outcome_response("done"))
+    assert main(["--directory", str(target), "run", "agents", "input"]) == 0
+    [args] = spawn_args(target)
+    assert "You are the planner." in flag_value(args, "--agents")
+
+
+def test_directory_resume_reads_target_state_and_invocation_workflow(
+    dirs: tuple[Path, Path], target: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    write(project, "fixable", BROKEN.replace("workgraph-no-such-cmd", "./fixit"))
+    assert main(["--directory", str(target), "run", "fixable", "input"]) == 2
+    fixit = target / "fixit"
+    fixit.write_text("#!/bin/sh\nexit 0\n")
+    fixit.chmod(0o755)
+    capsys.readouterr()
+    assert main(["--directory", str(target), "resume"]) == 0
+    assert capsys.readouterr().out == "check: pass\n"
+    assert json.loads((target / STATE_FILE).read_text())["node"] == "END"
 
 
 def test_unknown_workflow_returns_one(

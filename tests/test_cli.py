@@ -74,6 +74,22 @@ def test_viz_mermaid_prints_mermaid_source(
     assert "    check -->|pass| END" in out
 
 
+def test_viz_ignores_the_directory_flag(project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    elsewhere = project.parent / "elsewhere"
+    elsewhere.mkdir()
+    assert main(["--directory", str(elsewhere), "viz", "--mermaid", "build"]) == 0
+    assert capsys.readouterr().out.startswith("flowchart TD\n")
+
+
+def test_nonexistent_directory_is_a_usage_error(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        main(["--directory", str(project / "ghost"), "run", "build", "input"])
+    assert excinfo.value.code == 2
+    assert "not a directory" in capsys.readouterr().err
+
+
 def test_viz_reports_errors_and_returns_one(
     dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
 ) -> None:
