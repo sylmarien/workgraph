@@ -1,0 +1,31 @@
+start = "implement"
+
+[defaults]
+harness = "claude"
+model = "sonnet"
+effort = "medium"
+
+[nodes.implement]
+agent = "implement"
+outcomes = ["done"]
+
+[nodes.implement.limits]
+visits = 3
+
+[nodes.implement.transitions]
+done = "test"
+
+[nodes.test]
+command = "sh -c 'uv run ruff check && uv run ruff format --check && uv run mypy && uv run pytest'"
+
+[nodes.test.transitions]
+pass = "review"
+fail = "implement"
+
+[nodes.review]
+agent = "review"
+outcomes = ["approved", "changes_requested"]
+
+[nodes.review.transitions]
+approved = "END"
+changes_requested = "implement"
