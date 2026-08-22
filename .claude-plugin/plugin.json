@@ -1,0 +1,6 @@
+{
+  "name": "workgraph",
+  "description": "Run development workflows declared as graphs from a Claude Code session.",
+  "version": "0.1.0",
+  "author": { "name": "sylmarien" }
+}

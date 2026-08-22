@@ -1,0 +1,23 @@
+---
+name: workgraph
+description: >
+  Start and follow a workgraph run. Use when the user invokes
+  /workgraph <workflow> [directory] <input...>.
+---
+If `workgraph` is not on `PATH`, run the plugin's `install` skill first.
+
+Arguments: the first is the workflow name. If the second names an existing
+directory, pass it as `--directory`. Everything remaining is the run input,
+passed verbatim as one argument.
+
+1. Launch the run in the background:
+   `workgraph run <workflow> "<input>"`, with
+   `--directory <directory>` before `run` when a directory was given.
+   Never cd: `--directory` keeps workflow and agent file resolution in the
+   session's directory while the run executes in the target.
+2. Relay each progress line (`<node>: <outcome>`) as it appears.
+3. On stop, report by exit code:
+   - 0: the run reached END.
+   - 2 (failure) or 3 (escalation): the stopped node and the error line;
+     offer to run `workgraph resume` with the same `--directory`.
+   - 1: the error line. Nothing is resumable.

@@ -6,7 +6,7 @@ developer writes the workflow once and starts a run from a harness session
 with `/workgraph`. The run prints one progress line per node. One command
 resumes a stopped run.
 
-This repository runs its own workflow, `.workgraph/dev.toml`:
+This repository runs its own workflow, `.workgraph/workflows/dev.toml`:
 
 ```mermaid
 flowchart TD
@@ -19,6 +19,21 @@ flowchart TD
 ```
 
 ## Install
+
+As a Claude Code plugin:
+
+```
+/plugin marketplace add sylmarien/workgraph
+/plugin install workgraph@workgraph
+```
+
+Installing the plugin adds the `/workgraph` skill and bundles the `dev`
+workflow with its agent definitions. The plugin's `install` skill finishes
+the setup: it checks that `claude` and `uv` are on `PATH`, installs the CLI
+with `uv`, and places the bundled files under `~/.workgraph/`. It installs
+neither `claude` nor `uv`.
+
+Without the plugin:
 
 ```sh
 uv tool install git+https://github.com/sylmarien/workgraph
@@ -69,11 +84,11 @@ that reached `END` cannot be resumed.
 
 ## Workflow files
 
-A workflow lives in `.workgraph/<name>.toml`; the filename is the workflow
-name. `workgraph` searches the invocation directory, then the home directory,
-and takes the first match. A project workflow therefore shadows a personal
-one of the same name. `.workgraph/dev.toml` in this repository is a
-full three-node example; the reference below uses two nodes.
+A workflow lives in `.workgraph/workflows/<name>.toml`; the filename is the
+workflow name. `workgraph` searches the invocation directory, then the home
+directory, and takes the first match. A project workflow therefore shadows a
+personal one of the same name. `.workgraph/workflows/dev.toml` in this
+repository is a full three-node example; the reference below uses two nodes.
 
 ```toml
 start = "implement"          # entry node, required
@@ -137,10 +152,10 @@ Rules, all validated at load time:
 
 ## Agent definitions
 
-An agent node references an agent definition by name: a Claude Code subagent
-file at `.claude/agents/<name>.md` in the invocation directory or the home
-directory, in that order. The file is harness-native and carries no workflow
-contract, so the same agent works interactively and inside workflows.
+An agent node references an agent definition by name: a file in the Claude
+Code subagent format at `.workgraph/agents/<name>.md` in the invocation
+directory or the home directory, in that order. The file carries no workflow
+contract.
 
 ```markdown
 ---
@@ -164,8 +179,9 @@ The run input names a GitHub issue. Read it, implement it, write tests.
 
 ## The /workgraph skill
 
-Copy this block into `~/.claude/skills/workgraph/SKILL.md` to start and
-follow runs from a Claude Code session:
+The plugin ships this skill. Without the plugin, copy this block into
+`~/.claude/skills/workgraph/SKILL.md` to start and follow runs from a
+Claude Code session:
 
 ````markdown
 ---

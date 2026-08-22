@@ -282,11 +282,11 @@ def _agent_argv(
 
 def _load_agent_definition(node_name: str, agent: str) -> dict[str, str]:
     for base in (Path.cwd(), Path.home()):
-        path = base / ".claude" / "agents" / f"{agent}.md"
+        path = base / ".workgraph" / "agents" / f"{agent}.md"
         if path.is_file():
             return _parse_agent_definition(path.read_text())
     raise NodeFailure(
-        f"node '{node_name}': agent definition '{agent}' not found in .claude/agents"
+        f"node '{node_name}': agent definition '{agent}' not found in .workgraph/agents"
         " of the invocation directory or the home directory"
     )
 
