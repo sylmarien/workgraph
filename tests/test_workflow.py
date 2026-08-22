@@ -99,7 +99,7 @@ def test_global_workflow_loads_without_project_one(dirs: tuple[Path, Path]) -> N
     assert load_workflow("build")["start"] == "check"
 
 
-def test_workflow_found_from_a_project_subdirectory(
+def test_workflow_is_not_searched_in_parent_directories(
     dirs: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project, _ = dirs
@@ -107,7 +107,8 @@ def test_workflow_found_from_a_project_subdirectory(
     subdirectory = project / "src" / "deep"
     subdirectory.mkdir(parents=True)
     monkeypatch.chdir(subdirectory)
-    assert load_workflow("build")["start"] == "check"
+    with pytest.raises(WorkflowError, match="workflow 'build' not found"):
+        load_workflow("build")
 
 
 def test_unknown_workflow_is_an_error(dirs: tuple[Path, Path]) -> None:

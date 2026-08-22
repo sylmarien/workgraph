@@ -3,6 +3,7 @@
 import argparse
 import sys
 from collections.abc import Callable
+from pathlib import Path
 
 from termaid import render
 
@@ -26,7 +27,7 @@ def main(argv: list[str] | None = None) -> int:
         case "run":
             return _run(args)
         case "resume":
-            return _resume()
+            return _resume(args)
         case "viz":
             return _viz(args)
         case _:
@@ -36,6 +37,13 @@ def main(argv: list[str] | None = None) -> int:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="workgraph", description="Graph workflow orchestrator.")
+    parser.add_argument(
+        "--directory",
+        type=_directory,
+        default=Path("."),
+        help="Directory the run executes in and stores its state in;"
+        " workflow and agent files still resolve from the invocation directory.",
+    )
     subparsers = parser.add_subparsers(dest="command")
     _add_run_parser(subparsers)
     subparsers.add_parser("resume", help="Resume a stopped run at the node where it stopped.")
@@ -77,17 +85,24 @@ def _add_viz_parser(subparsers: "argparse._SubParsersAction[argparse.ArgumentPar
     viz.set_defaults(style="unicode")
 
 
+def _directory(value: str) -> Path:
+    path = Path(value)
+    if not path.is_dir():
+        raise argparse.ArgumentTypeError(f"'{value}' is not a directory")
+    return path
+
+
 def _run(args: argparse.Namespace) -> int:
     def action() -> None:
-        run_workflow(args.workflow, load_workflow(args.workflow), args.input)
+        run_workflow(args.workflow, load_workflow(args.workflow), args.input, args.directory)
 
     return _report(action)
 
 
-def _resume() -> int:
+def _resume(args: argparse.Namespace) -> int:
     def action() -> None:
-        state = load_state()
-        resume_run(load_workflow(state["workflow"]), state)
+        state = load_state(args.directory)
+        resume_run(load_workflow(state["workflow"]), state, args.directory)
 
     return _report(action)
 
