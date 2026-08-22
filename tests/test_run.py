@@ -169,8 +169,8 @@ def fake_claude(dirs: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 def write_agent(base: Path, name: str, text: str) -> None:
-    """Write an agent definition into base/.claude/agents."""
-    directory = base / ".claude" / "agents"
+    """Write an agent definition into base/.workgraph/agents."""
+    directory = base / ".workgraph" / "agents"
     directory.mkdir(parents=True, exist_ok=True)
     (directory / f"{name}.md").write_text(text)
 

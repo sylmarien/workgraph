@@ -29,7 +29,7 @@ def dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
 
 
 def write(base: Path, name: str, text: str) -> None:
-    """Write a workflow file into base/.workgraph."""
-    directory = base / ".workgraph"
-    directory.mkdir(exist_ok=True)
+    """Write a workflow file into base/.workgraph/workflows."""
+    directory = base / ".workgraph" / "workflows"
+    directory.mkdir(parents=True, exist_ok=True)
     (directory / f"{name}.toml").write_text(text)

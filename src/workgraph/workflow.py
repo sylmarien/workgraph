@@ -44,12 +44,12 @@ def to_mermaid(workflow: dict[str, Any]) -> str:
 
 def _find(name: str) -> Path:
     for base in (Path.cwd(), Path.home()):
-        path = base / ".workgraph" / f"{name}.toml"
+        path = base / ".workgraph" / "workflows" / f"{name}.toml"
         if path.is_file():
             return path
     raise WorkflowError(
-        f"workflow '{name}' not found in a .workgraph directory of the invocation directory"
-        " or the home directory"
+        f"workflow '{name}' not found in a .workgraph/workflows directory of the"
+        " invocation directory or the home directory"
     )
 
 

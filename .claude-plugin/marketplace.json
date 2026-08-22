@@ -1,0 +1,10 @@
+{
+  "name": "workgraph",
+  "owner": { "name": "sylmarien" },
+  "plugins": [
+    {
+      "name": "workgraph",
+      "source": "./"
+    }
+  ]
+}
