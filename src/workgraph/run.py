@@ -4,6 +4,7 @@ import json
 import shlex
 import subprocess
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -135,6 +136,10 @@ def _run_nodes(
                 outcome, handoff_text = _run_agent(
                     current, node, defaults, run_input, handoff, directory
                 )
+            elif "map" in node:
+                outcome, handoff_text = _run_map(
+                    current, node, nodes, defaults, run_input, handoff, directory
+                )
             else:
                 outcome, handoff_text = _run_command(current, node, directory), None
         except NodeFailure:
@@ -155,6 +160,41 @@ def _run_command(name: str, node: dict[str, Any], directory: Path) -> str:
     except (OSError, ValueError, IndexError) as error:
         raise NodeFailure(f"node '{name}': spawn failure: {error}") from error
     return "pass" if completed.returncode == 0 else "fail"
+
+
+def _run_map(
+    name: str,
+    node: dict[str, Any],
+    nodes: dict[str, Any],
+    defaults: dict[str, Any],
+    run_input: str,
+    handoff: tuple[str, str] | None,
+    directory: Path,
+) -> tuple[str, str | None]:
+    def run_child(child: str) -> tuple[str, str | None]:
+        child_node = nodes[child]
+        try:
+            if "agent" in child_node:
+                result = _run_agent(child, child_node, defaults, run_input, handoff, directory)
+            else:
+                result = _run_command(child, child_node, directory), None
+        except NodeFailure:
+            # A fanned-out node's failure counts as not passing; the run continues.
+            result = "fail", None
+        print(f"{name}/{child}: {result[0]}", flush=True)
+        return result
+
+    children = node["map"]
+    with ThreadPoolExecutor(max_workers=len(children)) as pool:
+        results = list(pool.map(run_child, children))
+    resolve = all if node["resolve"] == "all" else any
+    outcome = "pass" if resolve(child_outcome == "pass" for child_outcome, _ in results) else "fail"
+    blocks = [
+        f"{child}:\n{text}"
+        for child, (_, text) in zip(children, results, strict=True)
+        if text is not None
+    ]
+    return outcome, "\n\n".join(blocks) if blocks else None
 
 
 def _run_agent(

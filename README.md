@@ -53,6 +53,7 @@ Without the flag, both directories are the current directory. `workgraph`
 can therefore run one directory's workflows in another directory.
 
 A run prints one line per node run: `<node>: <outcome>`, or `<node>: failure`.
+A fanned-out node prints as `<map>/<node>: <outcome>`, in completion order.
 Exit codes:
 
 - `0` — the run reached `END`.
@@ -101,13 +102,31 @@ pass = "END"
 fail = "implement"
 ```
 
+A third node kind fans out:
+
+```toml
+[nodes.checks]
+map = ["lint", "typecheck"]  # nodes declared in this workflow, run in parallel
+resolve = "all"              # pass iff every fanned-out node passes; "any": at least one
+```
+
 Rules, all validated at load time:
 
-- A node declares exactly one of `agent` or `command`.
+- A node declares exactly one of `agent`, `command`, or `map`.
 - An agent node declares a non-empty `outcomes` list; `harness`, `model`, and
   `effort` must each resolve from the node or `[defaults]`.
 - A command node has the fixed outcomes `pass` and `fail`. It declares no
   `outcomes` and no agent settings.
+- A map node also has the fixed outcomes `pass` and `fail`, resolved with
+  `resolve` over the fanned-out nodes' outcomes. It declares no `outcomes`
+  and no agent settings. One fan-out counts as one visit to the map node.
+- A fanned-out node must have `pass` among its outcomes and declares no
+  `transitions` and no `limits`. It cannot be the start node, a transition
+  target, a map node, or fanned out twice. Its failure counts as not
+  passing and never stops the run.
+- Fanned-out handoffs concatenate in `map` order, each block prefixed with
+  its node's name; the successor sees the map node as the handoff source.
+  A handoff delivered to the map node is forwarded to every fanned-out node.
 - Transitions are total: every outcome maps to a node name or `END`.
 - `END` and `LIMIT` are reserved. `END` as a transition target completes the
   run. A `LIMIT` transition key routes the node when its visit limit is
