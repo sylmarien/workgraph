@@ -14,8 +14,13 @@ flowchart TD
     implement -->|done| test
     test -->|pass| review
     test -->|fail| implement
-    review -->|approved| END
-    review -->|changes_requested| implement
+    review --> code-review
+    review --> overengineering-review
+    review -->|pass| pr
+    review -->|fail| implement
+    review -->|LIMIT| summary
+    summary -->|done| pr
+    pr -->|done| END
 ```
 
 ## Install
@@ -88,7 +93,7 @@ A workflow lives in `.workgraph/workflows/<name>.toml`; the filename is the
 workflow name. `workgraph` searches the invocation directory, then the home
 directory, and takes the first match. A project workflow therefore shadows a
 personal one of the same name. `.workgraph/workflows/dev.toml` in this
-repository is a full three-node example; the reference below uses two nodes.
+repository is a full example; the reference below uses two nodes.
 
 ```toml
 start = "implement"          # entry node, required

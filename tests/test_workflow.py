@@ -93,6 +93,18 @@ def test_map_workflow_renders_fan_out_edges(dirs: tuple[Path, Path]) -> None:
     assert to_mermaid(load_workflow("mapped")) == MAPPED_MERMAID
 
 
+BUNDLED = Path(__file__).parent.parent / ".workgraph"
+
+
+def test_bundled_dev_workflow_is_valid_and_its_agents_exist(dirs: tuple[Path, Path]) -> None:
+    project, _ = dirs
+    write(project, "dev", (BUNDLED / "workflows" / "dev.toml").read_text())
+    workflow = load_workflow("dev")
+    agents = {node["agent"] for node in workflow["nodes"].values() if "agent" in node}
+    missing = {agent for agent in agents if not (BUNDLED / "agents" / f"{agent}.md").is_file()}
+    assert not missing
+
+
 START_NOT_FIRST = """
 start = "second"
 

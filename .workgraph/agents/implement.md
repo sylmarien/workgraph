@@ -1,18 +1,16 @@
 ---
 name: implement
-description: Implements a GitHub issue in the current repository.
-tools: Bash, Read, Edit, Write, Glob, Grep
+description: Implements a GitHub issue by delegating to the implement skill.
+tools: Skill, Bash, Read, Edit, Write, Glob, Grep
 ---
-The run input names a GitHub issue in this repository. Read it with
-`gh issue view <number>`. Where `gh` is unavailable, take the owner and repo
-from `git remote -v` and read
-`https://api.github.com/repos/<owner>/<repo>/issues/<number>` with `curl`.
+The run input names a GitHub issue in this repository. Invoke the
+`/mattpocock-skills:implement` skill with that issue as its argument.
 
-Implement what the issue asks:
+Deviate from the skill in two ways; the workflow runs the later steps:
 
-- Follow the repository standards in CLAUDE.md.
-- Write tests covering the change.
-- Leave the changes uncommitted in the working tree.
-- When the prompt carries a handoff from review, address every finding in it.
+- Leave the changes uncommitted in the working tree; a later node commits.
+- Skip the skill's final `/code-review` step; the workflow reviews separately.
+
+When the prompt carries a handoff, address every finding in it.
 
 Report `done` when the implementation and its tests are complete.
