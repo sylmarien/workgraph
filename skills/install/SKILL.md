@@ -15,8 +15,7 @@ description: >
 3. Copy the bundled files into the home directory, creating
    `~/.workgraph/workflows/` and `~/.workgraph/agents/` as needed:
    - `${CLAUDE_PLUGIN_ROOT}/.workgraph/workflows/dev.toml` → `~/.workgraph/workflows/`
-   - `${CLAUDE_PLUGIN_ROOT}/.workgraph/agents/implement.md` → `~/.workgraph/agents/`
-   - `${CLAUDE_PLUGIN_ROOT}/.workgraph/agents/review.md` → `~/.workgraph/agents/`
+   - every file in `${CLAUDE_PLUGIN_ROOT}/.workgraph/agents/` → `~/.workgraph/agents/`
    Never overwrite an existing target: when its content is identical, skip
    it and say so; when it differs, report it and ask before replacing.
 4. Verify: `workgraph viz dev` prints the workflow graph.
