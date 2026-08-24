@@ -149,6 +149,18 @@ def test_unknown_workflow_is_an_error(dirs: tuple[Path, Path]) -> None:
         load_workflow("ghost")
 
 
+def test_bundled_dev_workflow_declares_the_review_fan_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(Path(__file__).parent.parent)
+    workflow = load_workflow("dev")
+    assert workflow["defaults"] == {"harness": "claude", "model": "fable", "effort": "high"}
+    review = workflow["nodes"]["review"]
+    assert review["map"] == ["code-review", "overengineering-review"]
+    assert review["resolve"] == "all"
+    assert review["transitions"] == {"pass": "pr", "fail": "implement", "LIMIT": "summary"}
+
+
 BAD = [
     pytest.param(MINIMAL.replace('start = "check"', "start ="), "invalid TOML", id="invalid-toml"),
     pytest.param(
