@@ -2,15 +2,15 @@ start = "implement"
 
 [defaults]
 harness = "claude"
-model = "sonnet"
-effort = "medium"
+model = "fable"
+effort = "high"
 
 [nodes.implement]
 agent = "implement"
 outcomes = ["done"]
 
 [nodes.implement.limits]
-visits = 3
+visits = 5
 
 [nodes.implement.transitions]
 done = "test"
@@ -23,9 +23,39 @@ pass = "review"
 fail = "implement"
 
 [nodes.review]
-agent = "review"
-outcomes = ["approved", "changes_requested"]
+map = ["code-review", "overengineering-review"]
+resolve = "all"
+
+[nodes.review.limits]
+visits = 3
 
 [nodes.review.transitions]
-approved = "END"
-changes_requested = "implement"
+pass = "pr"
+fail = "implement"
+LIMIT = "summary"
+
+[nodes.code-review]
+agent = "code-review"
+outcomes = ["pass", "fail"]
+
+[nodes.overengineering-review]
+agent = "overengineering-review"
+outcomes = ["pass", "fail"]
+
+[nodes.summary]
+agent = "summarize-review"
+model = "sonnet"
+effort = "medium"
+outcomes = ["done"]
+
+[nodes.summary.transitions]
+done = "pr"
+
+[nodes.pr]
+agent = "pr"
+model = "haiku"
+effort = "medium"
+outcomes = ["done"]
+
+[nodes.pr.transitions]
+done = "END"
