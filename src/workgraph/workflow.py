@@ -142,6 +142,12 @@ def _validate_node(
         if "pass" not in outcomes:
             fail("a fanned-out node must have 'pass' in its outcomes")
         return
+    limits = node.get("limits", {})
+    if "reset" in limits:
+        if "visits" not in limits:
+            fail("'reset' requires 'visits' in the same limits table")
+        if limits["reset"] not in outcomes:
+            fail(f"reset outcome '{limits['reset']}' is not an outcome of the node")
     transitions = node.get("transitions", {})
     for outcome in outcomes:
         if outcome not in transitions:

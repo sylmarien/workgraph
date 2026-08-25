@@ -152,6 +152,9 @@ Rules, all validated at load time:
 - `END` and `LIMIT` are reserved. `END` as a transition target completes the
   run. A `LIMIT` transition key routes the node when its visit limit is
   reached; without one, reaching the limit stops the run (escalation).
+- `limits.reset` names an outcome; a node run ending with it returns the
+  node's visit count to zero, so `visits` bounds entries since the last
+  reset. `reset` requires `visits` and must be one of the node's outcomes.
 - An agent node may report a free-text handoff with its outcome. workgraph
   appends it to the run input as the next node's prompt, then discards it.
   A command node ignores it.

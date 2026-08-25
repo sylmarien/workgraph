@@ -36,6 +36,28 @@ fail = "spin"
 LIMIT = "END"
 """
 
+RESET = """
+start = "check"
+
+[nodes.check]
+command = "sh -c 'test -f flag || { touch flag; exit 1; }'"
+
+[nodes.check.limits]
+visits = 2
+reset = "pass"
+
+[nodes.check.transitions]
+pass = "gate"
+fail = "check"
+
+[nodes.gate]
+command = "sh -c 'test -f flag2 || { touch flag2; rm flag; exit 1; }'"
+
+[nodes.gate.transitions]
+pass = "END"
+fail = "check"
+"""
+
 CHAIN = """
 start = "first"
 
@@ -245,6 +267,28 @@ def test_visit_limit_without_limit_transition_escalates(
     assert captured.out == "spin: pass\nspin: pass\n"
     assert "node 'spin' reached its visit limit of 2" in captured.err
     assert "has no LIMIT transition" in captured.err
+
+
+def test_reset_outcome_clears_the_visit_count(
+    dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    write(project, "reset", RESET)
+    assert main(["run", "reset", "input"]) == 0
+    assert capsys.readouterr().out == (
+        "check: fail\ncheck: pass\ngate: fail\ncheck: fail\ncheck: pass\ngate: pass\n"
+    )
+    assert read_state()["visits"] == {"gate": 2}
+
+
+def test_limit_trips_without_an_intervening_reset_outcome(
+    dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    write(project, "spin", SPIN.replace("visits = 2", 'visits = 2\nreset = "fail"'))
+    assert main(["run", "spin", "input"]) == 0
+    assert capsys.readouterr().out == "spin: pass\nspin: pass\n"
+    assert read_state()["visits"] == {"spin": 2}
 
 
 def test_looping_limit_transitions_escalate(

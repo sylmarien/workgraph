@@ -9,14 +9,15 @@ effort = "high"
 agent = "implement"
 outcomes = ["done"]
 
-[nodes.implement.limits]
-visits = 5
-
 [nodes.implement.transitions]
 done = "test"
 
 [nodes.test]
 command = "sh -c 'uv run ruff check && uv run ruff format --check && uv run mypy && uv run pytest'"
+
+[nodes.test.limits]
+visits = 5
+reset = "pass"
 
 [nodes.test.transitions]
 pass = "review"
