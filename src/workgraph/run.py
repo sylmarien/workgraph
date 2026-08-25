@@ -110,7 +110,8 @@ def _run_nodes(
     diverted: set[str] = set()
     while current != END:
         node = nodes[current]
-        limit = node.get("limits", {}).get("visits")
+        limits = node.get("limits", {})
+        limit = limits.get("visits")
         if not grace and limit is not None and visits.get(current, 0) >= limit:
             if LIMIT not in node["transitions"]:
                 _write_state(name, run_input, current, visits, handoff, directory)
@@ -147,6 +148,8 @@ def _run_nodes(
             _write_state(name, run_input, current, visits, handoff, directory)
             raise
         print(f"{current}: {outcome}", flush=True)
+        if outcome == limits.get("reset"):
+            visits.pop(current, None)
         target = node["transitions"][outcome]
         handoff = (current, handoff_text) if handoff_text is not None and target != END else None
         _write_state(name, run_input, current, visits, handoff, directory)

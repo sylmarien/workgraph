@@ -159,6 +159,7 @@ def test_bundled_dev_workflow_declares_the_review_fan_out(
     assert review["map"] == ["code-review", "overengineering-review"]
     assert review["resolve"] == "all"
     assert review["transitions"] == {"pass": "pr", "fail": "implement", "LIMIT": "summary"}
+    assert workflow["nodes"]["test"]["limits"] == {"visits": 5, "reset": "pass"}
 
 
 BAD = [
@@ -325,6 +326,16 @@ fail = "END"
         MAPPED + "\n[nodes.lint.limits]\nvisits = 2\n",
         "node 'lint': a fanned-out node cannot declare 'limits'",
         id="limits-on-fanned-out-node",
+    ),
+    pytest.param(
+        MINIMAL + '\n[nodes.check.limits]\nreset = "pass"\n',
+        "node 'check': 'reset' requires 'visits' in the same limits table",
+        id="reset-without-visits",
+    ),
+    pytest.param(
+        MINIMAL + '\n[nodes.check.limits]\nvisits = 2\nreset = "done"\n',
+        "node 'check': reset outcome 'done' is not an outcome of the node",
+        id="reset-outcome-not-in-outcome-set",
     ),
     pytest.param(
         MAPPED.replace(
