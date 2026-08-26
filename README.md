@@ -54,7 +54,9 @@ Requires Python 3.12+. Agent nodes additionally require the `claude` CLI on
 - `workgraph resume` — resume the stopped run in the current directory at the
   node where it stopped.
 - `workgraph viz <workflow>` — print the workflow graph. `--unicode`
-  (default), `--ascii`, or `--mermaid` for the mermaid source.
+  (default), `--ascii`, or `--mermaid` for the mermaid source. The unicode and
+  ascii styles widen the diagram to the terminal width. `--theme <name>` picks
+  one of termaid's color themes; `--help` lists them.
 
 Every subcommand takes `--directory <dir>` ahead of it:
 `workgraph --directory <dir> run <workflow> "<input>"`. The flag separates

@@ -35,7 +35,6 @@ def test_viz_prints_unicode_box_drawing_by_default(
     out = capsys.readouterr().out
     assert not out.isascii()
     assert "check" in out
-    assert "(  check  )" in out
 
 
 def test_viz_unicode_flag_matches_the_default(
@@ -61,7 +60,29 @@ def test_viz_ascii_prints_ascii_only(project: Path, capsys: pytest.CaptureFixtur
     out = capsys.readouterr().out
     assert out.isascii()
     assert "check" in out
-    assert "(  check  )" in out
+
+
+def test_viz_widens_the_diagram_to_the_terminal_width(
+    project: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("COLUMNS", "12")
+    assert main(["viz", "build"]) == 0
+    narrow = max(len(line) for line in capsys.readouterr().out.splitlines())
+    assert narrow <= 12
+    monkeypatch.setenv("COLUMNS", "200")
+    assert main(["viz", "build"]) == 0
+    wide = max(len(line) for line in capsys.readouterr().out.splitlines())
+    assert wide > narrow
+
+
+def test_viz_theme_changes_the_colors(
+    project: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    assert main(["viz", "build"]) == 0
+    default = capsys.readouterr().out
+    assert main(["viz", "--theme", "mono", "build"]) == 0
+    assert capsys.readouterr().out != default
 
 
 def test_viz_mermaid_prints_mermaid_source(

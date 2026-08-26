@@ -5,7 +5,10 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
-from termaid import render
+from rich.cells import cell_len
+from rich.console import Console
+from termaid import render_rich
+from termaid.renderer.themes import THEMES
 
 from workgraph.run import (
     Escalation,
@@ -82,6 +85,12 @@ def _add_viz_parser(subparsers: "argparse._SubParsersAction[argparse.ArgumentPar
         const="mermaid",
         help="Print the mermaid source.",
     )
+    viz.add_argument(
+        "--theme",
+        choices=sorted(THEMES),
+        default="default",
+        help="Color theme for the unicode and ascii styles.",
+    )
     viz.set_defaults(style="unicode")
 
 
@@ -131,6 +140,18 @@ def _viz(args: argparse.Namespace) -> int:
     mermaid = to_mermaid(workflow)
     if args.style == "mermaid":
         print(mermaid)
-    else:
-        print(render(mermaid, use_ascii=args.style == "ascii"))
+        return 0
+    use_ascii = args.style == "ascii"
+    console = Console()
+    # Widen node padding and column gap as far as the terminal width allows.
+    # ponytail: linear search over a handful of re-renders; switch to layout math if graphs get big.
+    diagram = render_rich(mermaid, use_ascii=use_ascii, theme=args.theme)
+    for spread in range(6, 17, 2):
+        wider = render_rich(
+            mermaid, use_ascii=use_ascii, theme=args.theme, padding_x=spread, gap=spread
+        )
+        if max(cell_len(line) for line in wider.plain.splitlines()) > console.width:
+            break
+        diagram = wider
+    console.print(diagram, soft_wrap=True)
     return 0
