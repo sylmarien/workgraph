@@ -93,6 +93,40 @@ def test_map_workflow_renders_fan_out_edges(dirs: tuple[Path, Path]) -> None:
     assert to_mermaid(load_workflow("mapped")) == MAPPED_MERMAID
 
 
+GATED = """
+start = "check"
+
+[nodes.check]
+command = "true"
+
+[nodes.check.transitions]
+pass = "approve"
+fail = "END"
+
+[nodes.approve]
+gate = "Ship it?"
+
+[nodes.approve.transitions]
+accept = "END"
+reject = "check"
+"""
+
+GATED_MERMAID = """\
+flowchart TD
+    check([check])
+    check -->|pass| approve
+    check -->|fail| END
+    approve{{approve}}
+    approve -->|accept| END
+    approve -->|reject| check"""
+
+
+def test_gate_workflow_renders_a_hexagon(dirs: tuple[Path, Path]) -> None:
+    project, _ = dirs
+    write(project, "gated", GATED)
+    assert to_mermaid(load_workflow("gated")) == GATED_MERMAID
+
+
 START_NOT_FIRST = """
 start = "second"
 
@@ -184,12 +218,12 @@ BAD = [
     ),
     pytest.param(
         MINIMAL.replace('command = "true"', 'command = "true"\nagent = "worker"'),
-        "node 'check': declare exactly one of 'agent', 'command', or 'map'",
+        "node 'check': declare exactly one of 'agent', 'command', 'map', or 'gate'",
         id="agent-and-command",
     ),
     pytest.param(
         MINIMAL.replace('command = "true"', ""),
-        "node 'check': declare exactly one of 'agent', 'command', or 'map'",
+        "node 'check': declare exactly one of 'agent', 'command', 'map', or 'gate'",
         id="neither-agent-nor-command",
     ),
     pytest.param(
@@ -262,7 +296,7 @@ BAD = [
         MAPPED.replace(
             'map = ["lint", "typecheck"]', 'map = ["lint", "typecheck"]\ncommand = "true"'
         ),
-        "node 'checks': declare exactly one of 'agent', 'command', or 'map'",
+        "node 'checks': declare exactly one of 'agent', 'command', 'map', or 'gate'",
         id="map-and-command",
     ),
     pytest.param(
@@ -300,7 +334,7 @@ BAD = [
             '[nodes.typecheck]\ncommand = "true"',
             '[nodes.typecheck]\nmap = ["extra"]\nresolve = "all"\n\n[nodes.extra]\ncommand = "true"',
         ),
-        "node 'checks': fanned-out node 'typecheck' is itself a map node",
+        "node 'checks': fanned-out node 'typecheck' is a map node",
         id="map-node-fanned-out",
     ),
     pytest.param(
@@ -355,6 +389,53 @@ fail = "END"
         MAPPED.replace('start = "checks"', 'start = "lint"'),
         "start node 'lint' is fanned out by map node 'checks'",
         id="fanned-out-node-as-start",
+    ),
+    pytest.param(
+        GATED.replace('gate = "Ship it?"', 'gate = "Ship it?"\ncommand = "true"'),
+        "node 'approve': declare exactly one of 'agent', 'command', 'map', or 'gate'",
+        id="gate-and-command",
+    ),
+    pytest.param(
+        GATED.replace('gate = "Ship it?"', 'gate = "Ship it?"\noutcomes = ["accept"]'),
+        "node 'approve': a gate node cannot declare 'outcomes'",
+        id="outcomes-on-gate-node",
+    ),
+    pytest.param(
+        GATED.replace('gate = "Ship it?"', 'gate = "Ship it?"\nmodel = "opus"'),
+        "node 'approve': a gate node cannot declare 'model'",
+        id="setting-on-gate-node",
+    ),
+    pytest.param(
+        GATED + "\n[nodes.approve.limits]\nvisits = 2\n",
+        "node 'approve': a gate node cannot declare 'limits'",
+        id="limits-on-gate-node",
+    ),
+    pytest.param(
+        GATED.replace('gate = "Ship it?"', 'gate = ""'),
+        "node 'approve': 'gate' must be a non-empty question",
+        id="empty-gate-question",
+    ),
+    pytest.param(
+        GATED.replace('gate = "Ship it?"', "gate = true"),
+        "node 'approve': 'gate' must be a non-empty question",
+        id="non-string-gate-question",
+    ),
+    pytest.param(
+        GATED.replace('reject = "check"', ""),
+        "node 'approve': missing a transition for outcome 'reject'",
+        id="gate-transitions-not-total",
+    ),
+    pytest.param(
+        GATED.replace('reject = "check"', 'reject = "check"\npass = "END"'),
+        "node 'approve': transition key 'pass' is not an outcome",
+        id="unknown-transition-key-on-gate",
+    ),
+    pytest.param(
+        MAPPED.replace(
+            '[nodes.typecheck]\ncommand = "true"', '[nodes.typecheck]\ngate = "Ship it?"'
+        ),
+        "node 'checks': fanned-out node 'typecheck' is a gate node",
+        id="gate-fanned-out",
     ),
 ]
 

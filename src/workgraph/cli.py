@@ -11,15 +11,20 @@ from termaid import render_rich
 from termaid.renderer.themes import THEMES
 
 from workgraph.run import (
+    LOCK_FILE,
+    DecisionError,
     Escalation,
     NodeFailure,
     NothingToResume,
+    Park,
     RunInProgress,
     load_state,
+    park_report,
+    read_state,
     resume_run,
     run_workflow,
 )
-from workgraph.workflow import WorkflowError, load_workflow, to_mermaid
+from workgraph.workflow import END, WorkflowError, load_workflow, to_mermaid
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -31,6 +36,8 @@ def main(argv: list[str] | None = None) -> int:
             return _run(args)
         case "resume":
             return _resume(args)
+        case "status":
+            return _status(args)
         case "viz":
             return _viz(args)
         case _:
@@ -49,9 +56,20 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command")
     _add_run_parser(subparsers)
-    subparsers.add_parser("resume", help="Resume a stopped run at the node where it stopped.")
+    _add_resume_parser(subparsers)
+    subparsers.add_parser("status", help="Report the state of the run in the directory.")
     _add_viz_parser(subparsers)
     return parser
+
+
+def _add_resume_parser(subparsers: "argparse._SubParsersAction[argparse.ArgumentParser]") -> None:
+    resume = subparsers.add_parser(
+        "resume", help="Resume a stopped run, or deliver a decision to a parked one."
+    )
+    resume.add_argument(
+        "--decision", choices=["accept", "reject"], help="Decision for the gate the run parked at."
+    )
+    resume.add_argument("--feedback", help="Feedback delivered with a reject.")
 
 
 def _add_run_parser(subparsers: "argparse._SubParsersAction[argparse.ArgumentParser]") -> None:
@@ -111,7 +129,29 @@ def _run(args: argparse.Namespace) -> int:
 def _resume(args: argparse.Namespace) -> int:
     def action() -> None:
         state = load_state(args.directory)
-        resume_run(load_workflow(state["workflow"]), state, args.directory)
+        resume_run(
+            load_workflow(state["workflow"]), state, args.directory, args.decision, args.feedback
+        )
+
+    return _report(action)
+
+
+def _status(args: argparse.Namespace) -> int:
+    def action() -> None:
+        state = read_state(args.directory)
+        if state is None:
+            raise NothingToResume(f"no run in {args.directory}")
+        node = state["node"]
+        if (args.directory / LOCK_FILE).exists():
+            print(f"a run is in progress at node '{node}'")
+        elif node == END:
+            print("the run reached END")
+        else:
+            stopped = state.get("stopped", "interrupted")
+            print(f"stopped at '{node}': {stopped}")
+            if stopped == "gate":
+                question = load_workflow(state["workflow"])["nodes"][node]["gate"]
+                print(park_report(question, state.get("handoff")))
 
     return _report(action)
 
@@ -119,7 +159,7 @@ def _resume(args: argparse.Namespace) -> int:
 def _report(action: Callable[[], None]) -> int:
     try:
         action()
-    except (WorkflowError, RunInProgress, NothingToResume) as error:
+    except (WorkflowError, RunInProgress, NothingToResume, DecisionError) as error:
         print(error, file=sys.stderr)
         return 1
     except NodeFailure as error:
@@ -128,6 +168,8 @@ def _report(action: Callable[[], None]) -> int:
     except Escalation as error:
         print(error, file=sys.stderr)
         return 3
+    except Park:
+        return 4
     return 0
 
 

@@ -8,6 +8,7 @@ END = "END"
 LIMIT = "LIMIT"
 RESERVED_NAMES = frozenset({END, LIMIT})
 SETTINGS = ("harness", "model", "effort")
+KINDS = ("agent", "command", "map", "gate")
 
 
 class WorkflowError(Exception):
@@ -29,12 +30,14 @@ def load_workflow(name: str) -> dict[str, Any]:
 def to_mermaid(workflow: dict[str, Any]) -> str:
     """Render a validated workflow as a bare mermaid flowchart.
 
-    The start node is drawn as a stadium shape so every viz style
-    (unicode, ascii, mermaid) marks where a run begins.
+    The start node is drawn as a stadium and a gate node as a hexagon so
+    every viz style (unicode, ascii, mermaid) marks them.
     """
     start = workflow["start"]
     lines = ["flowchart TD", f"    {start}([{start}])"]
     for name, node in workflow["nodes"].items():
+        if "gate" in node:
+            lines.append(f"    {name}{{{{{name}}}}}")
         for child in node.get("map", []):
             lines.append(f"    {name} --> {child}")
         for outcome, target in node.get("transitions", {}).items():
@@ -79,11 +82,12 @@ def _collect_mapped(workflow_name: str, nodes: dict[str, Any]) -> dict[str, str]
                 raise WorkflowError(
                     f"{workflow_name}: node '{name}': fanned-out node '{child}' does not exist"
                 )
-            if "map" in nodes[child]:
-                raise WorkflowError(
-                    f"{workflow_name}: node '{name}': fanned-out node '{child}'"
-                    " is itself a map node"
-                )
+            for kind in ("map", "gate"):
+                if kind in nodes[child]:
+                    raise WorkflowError(
+                        f"{workflow_name}: node '{name}': fanned-out node '{child}'"
+                        f" is a {kind} node"
+                    )
             if child in mapped:
                 raise WorkflowError(
                     f"{workflow_name}: node '{name}': fanned-out node '{child}'"
@@ -106,10 +110,10 @@ def _validate_node(
 
     if name in RESERVED_NAMES:
         fail(f"'{name}' is reserved and cannot name a node")
-    if sum(kind in node for kind in ("agent", "command", "map")) != 1:
-        fail("declare exactly one of 'agent', 'command', or 'map'")
-    if "command" in node or "map" in node:
-        kind = "command" if "command" in node else "map"
+    if sum(kind in node for kind in KINDS) != 1:
+        fail("declare exactly one of 'agent', 'command', 'map', or 'gate'")
+    if "agent" not in node:
+        kind = next(kind for kind in KINDS if kind in node)
         if "outcomes" in node:
             fail(f"a {kind} node cannot declare 'outcomes'")
         for setting in SETTINGS:
@@ -120,7 +124,12 @@ def _validate_node(
                 fail("'map' must list at least one node")
             if node.get("resolve") not in ("any", "all"):
                 fail("'resolve' must be 'any' or 'all'")
-        outcomes = ["pass", "fail"]
+        if kind == "gate":
+            if not isinstance(node["gate"], str) or not node["gate"]:
+                fail("'gate' must be a non-empty question")
+            if "limits" in node:
+                fail("a gate node cannot declare 'limits'")
+        outcomes = ["accept", "reject"] if kind == "gate" else ["pass", "fail"]
     else:
         outcomes = node.get("outcomes", [])
         if not outcomes:

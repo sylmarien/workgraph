@@ -20,4 +20,8 @@ passed verbatim as one argument.
    - 0: the run reached END.
    - 2 (failure) or 3 (escalation): the stopped node and the error line;
      offer to run `workgraph resume` with the same `--directory`.
+   - 4 (park): the gate question and the review material; ask the user for
+     a decision, then run `workgraph resume --decision accept` or
+     `workgraph resume --decision reject --feedback "<text>"` with the same
+     `--directory`.
    - 1: the error line. Nothing is resumable.
