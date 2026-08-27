@@ -143,12 +143,14 @@ def _viz(args: argparse.Namespace) -> int:
         return 0
     use_ascii = args.style == "ascii"
     console = Console()
-    # Widen node padding and column gap as far as the terminal width allows.
+    # Widen node padding as far as the terminal width allows. Only padding_x
+    # scales: gap also grows the diagram vertically, and padding_y adds blank
+    # rows inside boxes, so both stay minimal to keep the graph short.
     # ponytail: linear search over a handful of re-renders; switch to layout math if graphs get big.
-    diagram = render_rich(mermaid, use_ascii=use_ascii, theme=args.theme)
+    diagram = render_rich(mermaid, use_ascii=use_ascii, theme=args.theme, padding_y=0)
     for spread in range(6, 17, 2):
         wider = render_rich(
-            mermaid, use_ascii=use_ascii, theme=args.theme, padding_x=spread, gap=spread
+            mermaid, use_ascii=use_ascii, theme=args.theme, padding_x=spread, padding_y=0
         )
         if max(cell_len(line) for line in wider.plain.splitlines()) > console.width:
             break
