@@ -75,6 +75,17 @@ def test_viz_widens_the_diagram_to_the_terminal_width(
     assert wide > narrow
 
 
+def test_viz_widening_does_not_grow_the_diagram_height(
+    project: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("COLUMNS", "12")
+    assert main(["viz", "build"]) == 0
+    narrow = len(capsys.readouterr().out.splitlines())
+    monkeypatch.setenv("COLUMNS", "200")
+    assert main(["viz", "build"]) == 0
+    assert len(capsys.readouterr().out.splitlines()) == narrow
+
+
 def test_viz_theme_changes_the_colors(
     project: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
