@@ -1,9 +1,9 @@
-"""Run a workflow of command and agent nodes."""
+"""Run a workflow of agent, command, map, and gate nodes."""
 
 import json
 import shlex
 import subprocess
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
@@ -31,8 +31,16 @@ class Escalation(Exception):
     """A node hit its visit limit and has no LIMIT transition; the run stops."""
 
 
+class Park(Exception):
+    """A gate node waits for a human decision; the run stops."""
+
+
+class DecisionError(Exception):
+    """The decision does not fit the stopped run."""
+
+
 def run_workflow(name: str, workflow: dict[str, Any], run_input: str, directory: Path) -> None:
-    """Run the workflow from its start node until END, a failure, or an escalation.
+    """Run the workflow from its start node until END, a failure, an escalation, or a park.
 
     Nodes execute in directory, where the run state is written to STATE_FILE
     after each node run. Prints one progress line per node run. Holds
@@ -42,40 +50,81 @@ def run_workflow(name: str, workflow: dict[str, Any], run_input: str, directory:
         _run_nodes(name, workflow, run_input, workflow["start"], {}, None, directory)
 
 
+def read_state(directory: Path) -> dict[str, Any] | None:
+    """Read the run state from STATE_FILE in directory; None when there is no state file."""
+    path = directory / STATE_FILE
+    return dict(json.loads(path.read_text())) if path.exists() else None
+
+
 def load_state(directory: Path) -> dict[str, Any]:
-    """Read the run state from STATE_FILE in directory.
+    """Read the state of a resumable run.
 
     load_state raises NothingToResume when no state file exists or the run reached END.
     """
-    try:
-        state: dict[str, Any] = json.loads((directory / STATE_FILE).read_text())
-    except FileNotFoundError:
-        raise NothingToResume(
-            f"no run state at {directory / STATE_FILE}; nothing to resume"
-        ) from None
+    state = read_state(directory)
+    if state is None:
+        raise NothingToResume(f"no run state at {directory / STATE_FILE}; nothing to resume")
     if state["node"] == END:
         raise NothingToResume("the run reached END; nothing to resume")
     return state
 
 
-def resume_run(workflow: dict[str, Any], state: dict[str, Any], directory: Path) -> None:
-    """Resume the stopped run at the node where its saved state says it stopped.
+def park_report(question: str, handoff: Sequence[str] | None) -> str:
+    """Format the gate question and the review material a gate shows the human."""
+    if handoff is None:
+        return f"{question}\nNo review material."
+    source, text = handoff
+    return f"{question}\nReview material from {source}:\n{text}"
 
-    The first re-entry (the grace entry) does not count toward the visit limit.
-    resume_run delivers an undelivered handoff to the resumed node.
+
+def resume_run(
+    workflow: dict[str, Any],
+    state: dict[str, Any],
+    directory: Path,
+    decision: str | None = None,
+    feedback: str | None = None,
+) -> None:
+    """Resume the stopped run from its saved state.
+
+    After a failure or an escalation, the run re-enters the stopped node with
+    the undelivered handoff; the grace entry does not count toward the visit limit.
+    After a park, the run follows the gate's transition for the decision instead:
+    accept forwards the pending handoff, reject delivers the feedback as JSON.
+    The entry a reject causes is a grace entry: the human already sent the run back.
+    resume_run raises DecisionError when the decision and feedback do not fit the run.
     """
-    handoff = state.get("handoff")
+    current = state["node"]
+    _check_decision(current, state.get("stopped") == "gate", decision, feedback)
+    saved = state.get("handoff")
+    handoff = (saved[0], saved[1]) if saved else None
+    if decision is not None:
+        print(f"{current}: {decision}", flush=True)
+        if decision == "reject":
+            received = handoff[1] if handoff else None
+            handoff = (current, json.dumps({"received": received, "feedback": feedback}))
+        current = workflow["nodes"][current]["transitions"][decision]
     with _lock(directory):
         _run_nodes(
             state["workflow"],
             workflow,
             state["input"],
-            state["node"],
+            current,
             state["visits"],
-            tuple(handoff) if handoff else None,
+            handoff,
             directory,
-            grace=True,
+            grace=decision != "accept",
         )
+
+
+def _check_decision(node: str, parked: bool, decision: str | None, feedback: str | None) -> None:
+    if parked and decision is None:
+        raise DecisionError(f"the run is parked at gate '{node}'; pass --decision accept or reject")
+    if not parked and decision is not None:
+        raise DecisionError(f"the run stopped at node '{node}', not at a gate; drop --decision")
+    if decision == "reject" and not feedback:
+        raise DecisionError("--decision reject requires --feedback")
+    if decision == "accept" and feedback is not None:
+        raise DecisionError("--decision accept does not take --feedback")
 
 
 @contextmanager
@@ -110,16 +159,20 @@ def _run_nodes(
     diverted: set[str] = set()
     while current != END:
         node = nodes[current]
+        if "gate" in node:
+            _write_state(name, run_input, current, visits, handoff, directory, stopped="gate")
+            print(f"{current}: parked\n{park_report(node['gate'], handoff)}", flush=True)
+            raise Park
         limits = node.get("limits", {})
         limit = limits.get("visits")
         if not grace and limit is not None and visits.get(current, 0) >= limit:
             if LIMIT not in node["transitions"]:
-                _write_state(name, run_input, current, visits, handoff, directory)
+                _write_state(name, run_input, current, visits, handoff, directory, stopped="limit")
                 raise Escalation(
                     f"node '{current}' reached its visit limit of {limit} and has no LIMIT transition"
                 )
             if current in diverted:
-                _write_state(name, run_input, current, visits, handoff, directory)
+                _write_state(name, run_input, current, visits, handoff, directory, stopped="limit")
                 raise Escalation(
                     f"node '{current}' reached its visit limit of {limit}"
                     " and its LIMIT transitions loop without running a node"
@@ -145,7 +198,7 @@ def _run_nodes(
                 outcome, handoff_text = _run_command(current, node, directory), None
         except NodeFailure:
             print(f"{current}: failure", flush=True)
-            _write_state(name, run_input, current, visits, handoff, directory)
+            _write_state(name, run_input, current, visits, handoff, directory, stopped="failure")
             raise
         print(f"{current}: {outcome}", flush=True)
         if outcome == limits.get("reset"):
@@ -314,6 +367,7 @@ def _write_state(
     visits: dict[str, int],
     handoff: tuple[str, str] | None,
     directory: Path,
+    stopped: str | None = None,
 ) -> None:
     state: dict[str, Any] = {
         "workflow": workflow,
@@ -323,4 +377,6 @@ def _write_state(
     }
     if handoff is not None:
         state["handoff"] = list(handoff)
+    if stopped is not None:
+        state["stopped"] = stopped
     (directory / STATE_FILE).write_text(json.dumps(state))

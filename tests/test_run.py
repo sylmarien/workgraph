@@ -47,13 +47,13 @@ visits = 2
 reset = "pass"
 
 [nodes.check.transitions]
-pass = "gate"
+pass = "recheck"
 fail = "check"
 
-[nodes.gate]
+[nodes.recheck]
 command = "sh -c 'test -f flag2 || { touch flag2; rm flag; exit 1; }'"
 
-[nodes.gate.transitions]
+[nodes.recheck.transitions]
 pass = "END"
 fail = "check"
 """
@@ -267,6 +267,7 @@ def test_visit_limit_without_limit_transition_escalates(
     assert captured.out == "spin: pass\nspin: pass\n"
     assert "node 'spin' reached its visit limit of 2" in captured.err
     assert "has no LIMIT transition" in captured.err
+    assert read_state()["stopped"] == "limit"
 
 
 def test_reset_outcome_clears_the_visit_count(
@@ -276,9 +277,9 @@ def test_reset_outcome_clears_the_visit_count(
     write(project, "reset", RESET)
     assert main(["run", "reset", "input"]) == 0
     assert capsys.readouterr().out == (
-        "check: fail\ncheck: pass\ngate: fail\ncheck: fail\ncheck: pass\ngate: pass\n"
+        "check: fail\ncheck: pass\nrecheck: fail\ncheck: fail\ncheck: pass\nrecheck: pass\n"
     )
-    assert read_state()["visits"] == {"gate": 2}
+    assert read_state()["visits"] == {"recheck": 2}
 
 
 def test_limit_trips_without_an_intervening_reset_outcome(
@@ -300,6 +301,7 @@ def test_looping_limit_transitions_escalate(
     captured = capsys.readouterr()
     assert captured.out == "spin: pass\nspin: pass\n"
     assert "LIMIT transitions loop without running a node" in captured.err
+    assert read_state()["stopped"] == "limit"
 
 
 @pytest.mark.parametrize("command", ["workgraph-no-such-cmd", ""])
@@ -313,6 +315,7 @@ def test_non_spawnable_command_stops_the_run(
     assert captured.out == "check: failure\n"
     assert "node 'check': spawn failure" in captured.err
     assert read_state()["visits"] == {"check": 1}
+    assert read_state()["stopped"] == "failure"
     assert not LOCK_FILE.exists()
 
 
@@ -961,3 +964,339 @@ def test_unknown_workflow_returns_one(
 ) -> None:
     assert main(["run", "ghost", "input"]) == 1
     assert "workflow 'ghost' not found" in capsys.readouterr().err
+
+
+GATED = """
+start = "check"
+
+[nodes.check]
+command = "true"
+
+[nodes.check.transitions]
+pass = "approve"
+fail = "END"
+
+[nodes.approve]
+gate = "Ship it?"
+
+[nodes.approve.transitions]
+accept = "END"
+reject = "check"
+"""
+
+GATED_AGENTS = """
+start = "plan"
+
+[defaults]
+harness = "claude"
+model = "opus"
+effort = "high"
+
+[nodes.plan]
+agent = "planner"
+outcomes = ["done"]
+
+[nodes.plan.limits]
+visits = 2
+
+[nodes.plan.transitions]
+done = "approve"
+LIMIT = "approve"
+
+[nodes.approve]
+gate = "Ship the plan?"
+
+[nodes.approve.transitions]
+accept = "build"
+reject = "plan"
+
+[nodes.build]
+agent = "builder"
+outcomes = ["done", "rework"]
+
+[nodes.build.transitions]
+done = "END"
+rework = "plan"
+"""
+
+PARKED = "approve: parked\nShip it?\nNo review material.\n"
+PARKED_PLAN = PARKED.replace("Ship it?", "Ship the plan?")
+
+
+def test_run_parks_at_a_gate(dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]) -> None:
+    project, _ = dirs
+    write(project, "gated", GATED)
+    assert main(["run", "gated", "issue #5"]) == 4
+    captured = capsys.readouterr()
+    assert captured.out == "check: pass\n" + PARKED
+    assert captured.err == ""
+    assert read_state() == {
+        "workflow": "gated",
+        "input": "issue #5",
+        "node": "approve",
+        "visits": {"check": 1},
+        "stopped": "gate",
+    }
+    assert not LOCK_FILE.exists()
+
+
+def test_accept_forwards_the_pending_handoff_unchanged(
+    dirs: tuple[Path, Path], fake_claude: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    write(project, "gated", GATED_AGENTS)
+    write_agent(project, "planner", PLANNER)
+    write_agent(project, "builder", "You are the builder.")
+    respond(project, outcome_response("done", handoff="Split the work in two."))
+    assert main(["run", "gated", "issue #9"]) == 4
+    assert capsys.readouterr().out == (
+        "plan: done\napprove: parked\nShip the plan?\n"
+        "Review material from plan:\nSplit the work in two.\n"
+    )
+    respond(project, outcome_response("done"))
+    assert main(["resume", "--decision", "accept"]) == 0
+    assert capsys.readouterr().out == "approve: accept\nbuild: done\n"
+    prompts = [flag_value(args, "-p") for args in spawn_args(project)]
+    assert prompts == ["issue #9", "issue #9\n\nHandoff from plan:\nSplit the work in two."]
+    assert read_state() == {
+        "workflow": "gated",
+        "input": "issue #9",
+        "node": "END",
+        "visits": {"plan": 1, "build": 1},
+    }
+    assert not LOCK_FILE.exists()
+
+
+def test_reject_delivers_the_feedback_as_a_json_handoff_from_the_gate(
+    dirs: tuple[Path, Path], fake_claude: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    write(project, "gated", GATED_AGENTS)
+    write_agent(project, "planner", PLANNER)
+    write_agent(project, "builder", "You are the builder.")
+    respond(project, outcome_response("done", handoff="Split the work in two."))
+    assert main(["run", "gated", "issue #9"]) == 4
+    capsys.readouterr()
+    respond(project, outcome_response("done"))
+    assert main(["resume", "--decision", "reject", "--feedback", "Feedback:\nThree parts."]) == 4
+    assert capsys.readouterr().out == "approve: reject\nplan: done\n" + PARKED_PLAN
+    prompt = flag_value(spawn_args(project)[1], "-p")
+    prefix = "issue #9\n\nHandoff from approve:\n"
+    assert prompt.startswith(prefix)
+    assert json.loads(prompt.removeprefix(prefix)) == {
+        "received": "Split the work in two.",
+        "feedback": "Feedback:\nThree parts.",
+    }
+    assert read_state()["visits"] == {"plan": 1}
+
+
+def test_reject_entry_does_not_count_toward_the_visit_limit(
+    dirs: tuple[Path, Path], fake_claude: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    write(project, "gated", GATED_AGENTS.replace("visits = 2", "visits = 1"))
+    write_agent(project, "planner", PLANNER)
+    respond(project, outcome_response("done"), outcome_response("done"))
+    assert main(["run", "gated", "issue #9"]) == 4
+    capsys.readouterr()
+    assert main(["resume", "--decision", "reject", "--feedback", "Again."]) == 4
+    assert capsys.readouterr().out == "approve: reject\nplan: done\n" + PARKED_PLAN
+    assert len(spawn_args(project)) == 2
+    assert read_state()["visits"] == {"plan": 1}
+
+
+def test_reject_without_review_material_sends_null(
+    dirs: tuple[Path, Path], fake_claude: None
+) -> None:
+    project, _ = dirs
+    write(project, "gated", GATED_AGENTS)
+    write_agent(project, "planner", PLANNER)
+    respond(project, outcome_response("done"), outcome_response("done"))
+    assert main(["run", "gated", "issue #9"]) == 4
+    assert main(["resume", "--decision", "reject", "--feedback", "No."]) == 4
+    prompt = flag_value(spawn_args(project)[1], "-p")
+    assert json.loads(prompt.removeprefix("issue #9\n\nHandoff from approve:\n")) == {
+        "received": None,
+        "feedback": "No.",
+    }
+
+
+def test_gate_as_limit_target_reviews_the_pending_handoff(
+    dirs: tuple[Path, Path], fake_claude: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    write(project, "gated", GATED_AGENTS.replace("visits = 2", "visits = 1"))
+    write_agent(project, "planner", PLANNER)
+    write_agent(project, "builder", "You are the builder.")
+    respond_agent(project, "planner", outcome_response("done"))
+    respond_agent(project, "builder", outcome_response("rework", handoff="Too vague."))
+    assert main(["run", "gated", "issue #9"]) == 4
+    capsys.readouterr()
+    assert main(["resume", "--decision", "accept"]) == 4
+    assert capsys.readouterr().out == (
+        "approve: accept\nbuild: rework\napprove: parked\nShip the plan?\n"
+        "Review material from build:\nToo vague.\n"
+    )
+    assert read_state()["handoff"] == ["build", "Too vague."]
+    assert read_state()["stopped"] == "gate"
+
+
+def test_accept_into_end_completes_the_run(
+    dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    write(project, "gated", GATED)
+    assert main(["run", "gated", "input"]) == 4
+    capsys.readouterr()
+    assert main(["resume", "--decision", "accept"]) == 0
+    assert capsys.readouterr().out == "approve: accept\n"
+    assert read_state() == {
+        "workflow": "gated",
+        "input": "input",
+        "node": "END",
+        "visits": {"check": 1},
+    }
+
+
+def test_reject_re_enters_the_target_as_a_grace_entry(
+    dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    write(project, "gated", GATED)
+    assert main(["run", "gated", "input"]) == 4
+    capsys.readouterr()
+    assert main(["resume", "--decision", "reject", "--feedback", "Not yet."]) == 4
+    assert capsys.readouterr().out == "approve: reject\ncheck: pass\n" + PARKED
+    assert read_state()["visits"] == {"check": 1}
+
+
+@pytest.mark.parametrize(
+    ("workflow", "text", "flags", "message"),
+    [
+        ("gated", GATED, [], "parked at gate 'approve'; pass --decision"),
+        ("gated", GATED, ["--decision", "reject"], "--decision reject requires --feedback"),
+        (
+            "gated",
+            GATED,
+            ["--decision", "reject", "--feedback", ""],
+            "--decision reject requires --feedback",
+        ),
+        (
+            "gated",
+            GATED,
+            ["--decision", "accept", "--feedback", "Fine."],
+            "--decision accept does not take --feedback",
+        ),
+        ("broken", BROKEN, ["--decision", "accept"], "stopped at node 'check', not at a gate"),
+    ],
+)
+def test_resume_flags_that_do_not_fit_the_stopped_run_are_usage_errors(
+    dirs: tuple[Path, Path],
+    capsys: pytest.CaptureFixture[str],
+    workflow: str,
+    text: str,
+    flags: list[str],
+    message: str,
+) -> None:
+    project, _ = dirs
+    write(project, workflow, text)
+    main(["run", workflow, "input"])
+    capsys.readouterr()
+    assert main(["resume", *flags]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert message in captured.err
+    assert read_state()["node"] != "END"
+
+
+def test_status_without_a_run_exits_with_an_error(
+    dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["status"]) == 1
+    assert capsys.readouterr().err == "no run in .\n"
+
+
+def test_status_reports_a_run_in_progress(
+    dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    write(project, "broken", BROKEN)
+    assert main(["run", "broken", "input"]) == 2
+    LOCK_FILE.touch()
+    capsys.readouterr()
+    assert main(["status"]) == 0
+    assert capsys.readouterr().out == "a run is in progress at node 'check'\n"
+
+
+def test_status_reports_a_run_that_reached_end(
+    dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    write(project, "loop", LOOP)
+    assert main(["run", "loop", "input"]) == 0
+    capsys.readouterr()
+    assert main(["status"]) == 0
+    assert capsys.readouterr().out == "the run reached END\n"
+
+
+@pytest.mark.parametrize(
+    ("workflow", "text", "line"),
+    [
+        ("broken", BROKEN, "stopped at 'check': failure\n"),
+        ("spin", SPIN.replace('LIMIT = "END"\n', ""), "stopped at 'spin': limit\n"),
+        ("gated", GATED, "stopped at 'approve': gate\nShip it?\nNo review material.\n"),
+    ],
+)
+def test_status_reports_the_stop_reason(
+    dirs: tuple[Path, Path],
+    capsys: pytest.CaptureFixture[str],
+    workflow: str,
+    text: str,
+    line: str,
+) -> None:
+    project, _ = dirs
+    write(project, workflow, text)
+    main(["run", workflow, "input"])
+    capsys.readouterr()
+    assert main(["status"]) == 0
+    assert capsys.readouterr().out == line
+
+
+def test_status_shows_the_review_material_of_a_parked_run(
+    dirs: tuple[Path, Path], fake_claude: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    write(project, "gated", GATED_AGENTS)
+    write_agent(project, "planner", PLANNER)
+    respond(project, outcome_response("done", handoff="Split the work in two."))
+    assert main(["run", "gated", "issue #9"]) == 4
+    capsys.readouterr()
+    assert main(["status"]) == 0
+    assert capsys.readouterr().out == (
+        "stopped at 'approve': gate\nShip the plan?\n"
+        "Review material from plan:\nSplit the work in two.\n"
+    )
+
+
+def test_status_reports_an_interrupted_run(
+    dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A run interrupted between node runs leaves state without a stop reason and no lock.
+    STATE_FILE.parent.mkdir()
+    STATE_FILE.write_text(
+        json.dumps({"workflow": "w", "input": "i", "node": "check", "visits": {}})
+    )
+    assert main(["status"]) == 0
+    assert capsys.readouterr().out == "stopped at 'check': interrupted\n"
+
+
+def test_status_honors_the_directory_flag(
+    dirs: tuple[Path, Path], target: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    write(project, "gated", GATED)
+    assert main(["--directory", str(target), "run", "gated", "input"]) == 4
+    capsys.readouterr()
+    assert main(["status"]) == 1
+    assert main(["--directory", str(target), "status"]) == 0
+    assert capsys.readouterr().out.startswith("stopped at 'approve': gate\n")

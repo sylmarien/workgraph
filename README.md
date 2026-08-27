@@ -52,7 +52,14 @@ Requires Python 3.12+. Agent nodes additionally require the `claude` CLI on
 - `workgraph run <workflow> "<input>"` — run a workflow in the current
   directory. The input is free text, typically an issue ref like `#12`.
 - `workgraph resume` — resume the stopped run in the current directory at the
-  node where it stopped.
+  node where it stopped. `--decision accept|reject` delivers a decision to a
+  parked run. `reject` requires `--feedback "<text>"`; `accept` does not
+  take it.
+- `workgraph status` — print one line about the run in the current directory:
+  `no run in <dir>` (exit 1), `a run is in progress at node '<node>'`,
+  `the run reached END`, or `stopped at '<node>': <gate|failure|limit>`. A
+  parked run also prints the gate question and the review material. A run
+  interrupted between node runs reports `interrupted` as its reason.
 - `workgraph viz <workflow>` — print the workflow graph. `--unicode`
   (default), `--ascii`, or `--mermaid` for the mermaid source. The unicode and
   ascii styles widen the diagram to the terminal width. `--theme <name>` picks
@@ -84,10 +91,15 @@ Exit codes:
 - `2` — failure: a node run ended without an outcome. The error names the
   node and the failure kind.
 - `3` — escalation: a node hit its visit limit and has no `LIMIT` transition.
+- `4` — park: a gate node waits for a decision. The output is the progress
+  line `<gate>: parked`, the gate question, then the review material.
 
 After a failure or an escalation, `workgraph resume` restarts the run at the
-stopped node. The first re-entry does not count toward the visit limit. A run
-that reached `END` cannot be resumed.
+stopped node. The first re-entry does not count toward the visit limit. After
+a park, `workgraph resume --decision accept|reject` prints `<gate>: <decision>`
+and follows the matching transition without re-running the gate. The entry a
+`reject` causes does not count toward the target's visit limit. A run that
+reached `END` cannot be resumed.
 
 ## Workflow files
 
@@ -95,8 +107,8 @@ A workflow lives in `.workgraph/workflows/<name>.toml`; the filename is the
 workflow name. `workgraph` searches the invocation directory, then the home
 directory, and takes the first match. A project workflow therefore shadows a
 personal one of the same name. `.workgraph/workflows/dev.toml` in this
-repository is a full example with all three node kinds; the reference below
-uses two nodes.
+repository is a full example with three of the four node kinds; the reference
+below uses two nodes.
 
 ```toml
 start = "implement"          # entry node, required
@@ -133,9 +145,20 @@ map = ["lint", "typecheck"]  # nodes declared in this workflow, run in parallel
 resolve = "all"              # pass iff every fanned-out node passes; "any": at least one
 ```
 
+A fourth node kind parks the run for a human decision:
+
+```toml
+[nodes.approve]
+gate = "Ship the plan?"      # the question the human is asked
+
+[nodes.approve.transitions]
+accept = "build"             # both decisions need a transition
+reject = "implement"
+```
+
 Rules, all validated at load time:
 
-- A node declares exactly one of `agent`, `command`, or `map`.
+- A node declares exactly one of `agent`, `command`, `map`, or `gate`.
 - An agent node declares a non-empty `outcomes` list; `harness`, `model`, and
   `effort` must each resolve from the node or `[defaults]`.
 - A command node has the fixed outcomes `pass` and `fail`. It declares no
@@ -150,6 +173,13 @@ Rules, all validated at load time:
 - Fanned-out handoffs concatenate in `map` order, each block prefixed with
   its node's name; the successor sees the map node as the handoff source.
   A handoff delivered to the map node is forwarded to every fanned-out node.
+- A gate node has the fixed outcomes `accept` and `reject`. `gate` is a
+  non-empty question. It declares no `outcomes`, `limits`, or agent settings,
+  and cannot be fanned out. It may be a `LIMIT` transition target.
+- Reaching a gate parks the run (exit 4) with the pending handoff as the
+  review material. `accept` forwards that handoff to the target unchanged.
+  `reject` delivers a handoff from the gate whose text is JSON:
+  `{"received": <pending handoff text or null>, "feedback": "<text>"}`.
 - Transitions are total: every outcome maps to a node name or `END`.
 - `END` and `LIMIT` are reserved. `END` as a transition target completes the
   run. A `LIMIT` transition key routes the node when its visit limit is
@@ -215,6 +245,10 @@ passed verbatim as one argument.
    - 0: the run reached END.
    - 2 (failure) or 3 (escalation): the stopped node and the error line;
      offer to run `workgraph resume` with the same `--directory`.
+   - 4 (park): the gate question and the review material; ask the user for
+     a decision, then run `workgraph resume --decision accept` or
+     `workgraph resume --decision reject --feedback "<text>"` with the same
+     `--directory`.
    - 1: the error line. Nothing is resumable.
 ````
 
