@@ -190,6 +190,8 @@ def _run_nodes(
                 outcome, handoff_text = _run_agent(
                     current, node, defaults, run_input, handoff, directory
                 )
+                # workgraph discards the handoff after delivering it to an agent.
+                handoff = None
             elif "map" in node:
                 outcome, handoff_text = _run_map(
                     current, node, nodes, defaults, run_input, handoff, directory
@@ -204,7 +206,11 @@ def _run_nodes(
         if outcome == limits.get("reset"):
             visits.pop(current, None)
         target = node["transitions"][outcome]
-        handoff = (current, handoff_text) if handoff_text is not None and target != END else None
+        # A command or map node that reports no handoff forwards the one it received.
+        if target == END:
+            handoff = None
+        elif handoff_text is not None:
+            handoff = (current, handoff_text)
         _write_state(name, run_input, current, visits, handoff, directory)
         current = target
     _write_state(name, run_input, END, visits, None, directory)
