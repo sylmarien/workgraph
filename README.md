@@ -189,7 +189,8 @@ Rules, all validated at load time:
   reset. `reset` requires `visits` and must be one of the node's outcomes.
 - An agent node may report a free-text handoff with its outcome. workgraph
   appends it to the run input as the next node's prompt, then discards it.
-  A command node ignores it.
+  A command node, or a map node whose fanned-out nodes report none, forwards
+  it unchanged, with its original source, to its own successor.
 
 ## Agent definitions
 

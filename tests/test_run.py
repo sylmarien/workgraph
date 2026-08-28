@@ -150,6 +150,36 @@ pass = "END"
 fail = "END"
 """
 
+AGENT_COMMAND_AGENT = """
+start = "plan"
+
+[defaults]
+harness = "claude"
+model = "opus"
+effort = "high"
+
+[nodes.plan]
+agent = "planner"
+outcomes = ["done"]
+
+[nodes.plan.transitions]
+done = "test"
+
+[nodes.test]
+command = "true"
+
+[nodes.test.transitions]
+pass = "build"
+fail = "build"
+
+[nodes.build]
+agent = "builder"
+outcomes = ["done"]
+
+[nodes.build.transitions]
+done = "END"
+"""
+
 PLANNER = """---
 name: planner
 description: Plans the work.
@@ -410,7 +440,7 @@ def test_handoff_reported_at_end_is_discarded(dirs: tuple[Path, Path], fake_clau
     assert "handoff" not in read_state()
 
 
-def test_command_successor_drops_the_handoff(
+def test_command_before_end_discards_the_handoff(
     dirs: tuple[Path, Path], fake_claude: None, capsys: pytest.CaptureFixture[str]
 ) -> None:
     project, _ = dirs
@@ -422,6 +452,44 @@ def test_command_successor_drops_the_handoff(
     snapshot = json.loads((project / "snapshot.json").read_text())
     assert snapshot["handoff"] == ["review", "Ship it."]
     assert "handoff" not in read_state()
+
+
+def test_command_forwards_the_handoff_it_received(
+    dirs: tuple[Path, Path], fake_claude: None
+) -> None:
+    project, _ = dirs
+    write(project, "sandwich", AGENT_COMMAND_AGENT)
+    write_agent(project, "planner", PLANNER)
+    write_agent(project, "builder", "You are the builder.")
+    respond(
+        project,
+        outcome_response("done", handoff="Split the work in two."),
+        outcome_response("done"),
+    )
+    assert main(["run", "sandwich", "issue #9"]) == 0
+    prompts = [flag_value(args, "-p") for args in spawn_args(project)]
+    assert prompts == ["issue #9", "issue #9\n\nHandoff from plan:\nSplit the work in two."]
+    assert "handoff" not in read_state()
+
+
+def test_handoff_forwarded_by_a_command_is_delivered_on_resume(
+    dirs: tuple[Path, Path], fake_claude: None
+) -> None:
+    project, _ = dirs
+    write(project, "sandwich", AGENT_COMMAND_AGENT)
+    write_agent(project, "planner", PLANNER)
+    write_agent(project, "builder", "You are the builder.")
+    respond(project, outcome_response("done", handoff="Split the work in two."), "EXIT2")
+    assert main(["run", "sandwich", "issue #9"]) == 2
+    assert read_state()["handoff"] == ["plan", "Split the work in two."]
+    respond(project, outcome_response("done"))
+    assert main(["resume"]) == 0
+    prompts = [flag_value(args, "-p") for args in spawn_args(project)]
+    assert prompts == [
+        "issue #9",
+        "issue #9\n\nHandoff from plan:\nSplit the work in two.",
+        "issue #9\n\nHandoff from plan:\nSplit the work in two.",
+    ]
 
 
 def test_spawn_flags_follow_the_decisions(
@@ -873,6 +941,26 @@ outcomes = ["pass", "fail"]
 """
 
 
+HANDOFF_THROUGH_FAN = HANDOFF_INTO_FAN.replace(
+    'pass = "END"\nfail = "END"', 'pass = "build"\nfail = "build"'
+).replace(
+    """[nodes.lint]
+agent = "linter"
+outcomes = ["pass", "fail"]
+""",
+    """[nodes.lint]
+command = "true"
+
+[nodes.build]
+agent = "builder"
+outcomes = ["done"]
+
+[nodes.build.transitions]
+done = "END"
+""",
+)
+
+
 def test_map_delivers_its_incoming_handoff_to_fanned_out_nodes(
     dirs: tuple[Path, Path], fake_claude: None
 ) -> None:
@@ -885,6 +973,19 @@ def test_map_delivers_its_incoming_handoff_to_fanned_out_nodes(
     assert main(["run", "fan", "issue #9"]) == 0
     [lint_args] = [args for args in spawn_args(project) if flag_value(args, "--agent") == "linter"]
     assert flag_value(lint_args, "-p") == "issue #9\n\nHandoff from plan:\nWatch the edges."
+
+
+def test_map_of_commands_forwards_the_handoff_it_received(
+    dirs: tuple[Path, Path], fake_claude: None
+) -> None:
+    project, _ = dirs
+    write(project, "fan", HANDOFF_THROUGH_FAN)
+    write_agent(project, "planner", "You plan.")
+    write_agent(project, "builder", "You build.")
+    respond(project, outcome_response("done", handoff="Watch the edges."), outcome_response("done"))
+    assert main(["run", "fan", "issue #9"]) == 0
+    build_args = spawn_args(project)[-1]
+    assert flag_value(build_args, "-p") == "issue #9\n\nHandoff from plan:\nWatch the edges."
 
 
 def test_map_handoffs_concatenate_in_declaration_order(
@@ -1166,7 +1267,10 @@ def test_reject_re_enters_the_target_as_a_grace_entry(
     assert main(["run", "gated", "input"]) == 4
     capsys.readouterr()
     assert main(["resume", "--decision", "reject", "--feedback", "Not yet."]) == 4
-    assert capsys.readouterr().out == "approve: reject\ncheck: pass\n" + PARKED
+    assert capsys.readouterr().out == (
+        "approve: reject\ncheck: pass\napprove: parked\nShip it?\n"
+        'Review material from approve:\n{"received": null, "feedback": "Not yet."}\n'
+    )
     assert read_state()["visits"] == {"check": 1}
 
 

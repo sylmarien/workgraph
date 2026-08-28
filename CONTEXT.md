@@ -66,7 +66,7 @@ One value from a node's closed set of possible results.
 _Avoid_: Result, status, exit state
 
 **Handoff**:
-Optional free text an agent node reports alongside its outcome. workgraph delivers it to the node the taken transition targets, then discards it. A command node ignores it; a gate node shows it to the human.
+Optional free text an agent node reports alongside its outcome. workgraph delivers it to the node the taken transition targets, then discards it. A command node, or a map node whose fanned-out nodes report none, forwards it unchanged to its own successor. A gate node shows it to the human.
 _Avoid_: Payload, message, artifact
 
 **Transition**:
