@@ -15,6 +15,7 @@ Run from the repo root:
 """
 
 import argparse
+import math
 import sys
 import time
 from collections import Counter
@@ -264,16 +265,24 @@ def chain(steps: list[tuple[str, Any]], now: datetime, width: int) -> str:
 
 # --- variant D: vertical chain ---------------------------------------------
 
-# Glyph sets: plain unicode, or Nerd Font (--rich). "pulse" is the hollow current glyph.
+# Glyph sets: plain unicode, or Nerd Font (--rich).
 GLYPHS = {
-    "plain": {"past": "◇", "current": "◆", "pulse": "◇", "failure": "✗", "limit": "┆", "warn": "⚠", "gate": "⬡", "end": "END"},
-    "nerd": {"past": "\uf058", "current": "\uf144", "pulse": "\uf01d", "failure": "\uf057", "limit": "\uf071", "warn": "\uf071", "gate": "\uf007", "end": "\uf11e END"},
+    "plain": {"past": "◇", "current": "◆", "failure": "✗", "limit": "┆", "warn": "⚠", "gate": "⬡", "end": "END"},
+    "nerd": {"past": "\uf058", "current": "\uf144", "failure": "\uf057", "limit": "\uf071", "warn": "\uf071", "gate": "\uf007", "end": "\uf11e END"},
 }
 
 DECISION = {"accept": "green", "reject": "red"}
+PULSE_PERIOD = 2.0  # seconds per fade in and out
+REDRAW = 0.1  # seconds between redraws under follow; the file poll stays at 0.5 s
 
 
-def vchain(wf: dict[str, Any], steps: list[tuple[str, Any]], now: datetime, g: dict[str, str], pulse: bool = False) -> Text:
+def shade(phase: float) -> str:
+    """Gray level of the current glyph: a sine fade between #606060 and white."""
+    level = int(96 + 159 * (0.5 + 0.5 * math.sin(2 * math.pi * phase)))
+    return f"bold #{level:02x}{level:02x}{level:02x}"
+
+
+def vchain(wf: dict[str, Any], steps: list[tuple[str, Any]], now: datetime, g: dict[str, str], pulse: float | None = None) -> Text:
     nodes = wf["nodes"]
     names = max((len(nr["name"]) for k, nr in steps if k == "run"), default=0)
 
@@ -289,7 +298,8 @@ def vchain(wf: dict[str, Any], steps: list[tuple[str, Any]], now: datetime, g: d
     def node_line(nr: dict[str, Any], pad: int = 0) -> Text:
         t = Text()
         if running(nr):
-            t.append(f"{g['pulse'] if pulse else g['current']} {nr['name'].ljust(pad)}  {dur(nr, now)}", "bold")
+            t.append(g["current"], "bold" if pulse is None else shade(pulse))
+            t.append(f" {nr['name'].ljust(pad)}  {dur(nr, now)}", "bold")
         else:
             glyph = g["failure"] if nr["outcome"] == "failure" else g["past"]
             t.append(f"{glyph} {nr['name'].ljust(pad)}", style_of(nr))
@@ -442,7 +452,7 @@ def path_line(steps: list[tuple[str, Any]], now: datetime, width: int) -> str:
 # --- driver ----------------------------------------------------------------
 
 
-def render(wf: dict[str, Any], events: list[dict[str, Any]], now: datetime, variant: str, use_ascii: bool, console: Console, g: dict[str, str] = GLYPHS["plain"], pulse: bool = False) -> None:
+def render(wf: dict[str, Any], events: list[dict[str, Any]], now: datetime, variant: str, use_ascii: bool, console: Console, g: dict[str, str] = GLYPHS["plain"], pulse: float | None = None) -> None:
     steps = model(events)
     if variant == "A":
         console.print(chain(steps, now, console.width), highlight=False, markup=False)
@@ -481,16 +491,20 @@ def main() -> None:
     if not args.follow:
         render(wf, events, parse(events[-1]["time"]) + timedelta(seconds=12), args.variant, args.ascii, console, g)
         return
-    for i in range(2, len(events) + 1):
-        now = parse(events[i - 1]["time"]) + timedelta(seconds=1)
-        sys.stdout.write("\x1b[2J\x1b[H")
-        render(wf, events[:i], now, args.variant, args.ascii, console, g, pulse=i % 2 == 1)
-        time.sleep(0.6)
-    if events[-1]["event"] != "stop":
-        for k in range(8):
-            sys.stdout.write("\x1b[2J\x1b[H")
-            render(wf, events, now + timedelta(seconds=0.5 * k + 1), args.variant, args.ascii, console, g, pulse=k % 2 == 1)
-            time.sleep(0.5)
+    # Replay: one journal event every 0.6 s, redrawn every REDRAW with the fade phase from wall time.
+    step, t0 = 0.6, time.monotonic()
+    sys.stdout.write("\x1b[2J")
+    while True:
+        elapsed = time.monotonic() - t0
+        i = min(2 + int(elapsed / step), len(events))
+        now = parse(events[i - 1]["time"]) + timedelta(seconds=1 + elapsed - (i - 2) * step)
+        sys.stdout.write("\x1b[H")
+        render(wf, events[:i], now, args.variant, args.ascii, console, g, pulse=(elapsed % PULSE_PERIOD) / PULSE_PERIOD)
+        sys.stdout.write("\x1b[J")
+        sys.stdout.flush()
+        if i == len(events) and (events[-1]["event"] == "stop" or elapsed > (len(events) - 2) * step + 6):
+            break
+        time.sleep(REDRAW)
 
 
 if __name__ == "__main__":
