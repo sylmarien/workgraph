@@ -54,6 +54,18 @@ The runtime that executes an agent.
 One execution of a workflow, from its start node until `END`, a failure, an escalation, a park, or a budget stop.
 _Avoid_: Execution, instance, job
 
+**Node run**:
+One entry of a node by a run, from its start to its outcome or failure. Named `<node>#<n>`, where `n` counts the node's node runs in the run, starting at 1 and never reset.
+_Avoid_: Visit, execution, attempt
+
+**Node run output**:
+The stdout and stderr the process of a node run writes. workgraph keeps them for inspection. A map node run and a gate node run have none.
+_Avoid_: Logs, transcript, capture
+
+**Journal**:
+The append-only record of a run's events, written as they happen.
+_Avoid_: Log, history, trace
+
 **Failure**:
 A node run ending without an outcome; the run stops.
 _Avoid_: Crash
