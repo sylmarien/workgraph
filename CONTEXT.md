@@ -66,6 +66,10 @@ _Avoid_: Logs, transcript, capture
 The append-only record of a run's events, written as they happen.
 _Avoid_: Log, history, trace
 
+**Follow**:
+Keeping an inspection view current while the run writes. A follow ends when the run stops or the followed node run ends.
+_Avoid_: Tail, watch, attach
+
 **Failure**:
 A node run ending without an outcome; the run stops.
 _Avoid_: Crash
