@@ -238,12 +238,15 @@ def respond_agent(project: Path, agent: str, *responses: str) -> None:
     (project / f"responses-{agent}").write_text("\n".join(responses) + "\n")
 
 
-def outcome_response(outcome: str, handoff: str | None = None) -> str:
-    """Build a fake claude result JSON reporting the outcome and an optional handoff."""
+def outcome_response(outcome: str, handoff: str | None = None, cost: float | None = None) -> str:
+    """Build a fake claude result JSON reporting the outcome, an optional handoff and cost."""
     output: dict[str, str] = {"outcome": outcome}
     if handoff is not None:
         output["handoff"] = handoff
-    return json.dumps({"is_error": False, "structured_output": output})
+    result: dict[str, object] = {"is_error": False, "structured_output": output}
+    if cost is not None:
+        result["total_cost_usd"] = cost
+    return json.dumps(result)
 
 
 def spawn_args(project: Path) -> list[list[str]]:
@@ -279,6 +282,7 @@ def test_loop_of_shell_commands_runs_to_end(
         "node": "END",
         "visits": {"check": 2},
         "spent_time": SPENT,
+        "spent_cost": 0,
     }
     assert not LOCK_FILE.exists()
 
@@ -379,6 +383,7 @@ def test_state_is_written_after_each_node_run(dirs: tuple[Path, Path]) -> None:
         "node": "first",
         "visits": {"first": 1},
         "spent_time": SPENT,
+        "spent_cost": 0,
     }
     assert read_state()["visits"] == {"first": 1, "second": 1}
 
@@ -405,6 +410,7 @@ def test_two_agent_loop_runs_to_end(
         "node": "END",
         "visits": {"plan": 2, "build": 2},
         "spent_time": SPENT,
+        "spent_cost": 0,
     }
     build_args = spawn_args(project)[1]
     assert json.loads(flag_value(build_args, "--agents")) == {
@@ -627,6 +633,7 @@ def test_resume_after_a_failure_completes_the_run(
         "node": "END",
         "visits": {"check": 1},
         "spent_time": SPENT,
+        "spent_cost": 0,
     }
     assert not LOCK_FILE.exists()
 
@@ -817,6 +824,7 @@ def test_map_all_passes_when_every_fanned_out_node_passes(
         "node": "END",
         "visits": {"checks": 1},
         "spent_time": SPENT,
+        "spent_cost": 0,
     }
 
 
@@ -1148,6 +1156,7 @@ def test_run_parks_at_a_gate(dirs: tuple[Path, Path], capsys: pytest.CaptureFixt
         "visits": {"check": 1},
         "stopped": "gate",
         "spent_time": SPENT,
+        "spent_cost": 0,
     }
     assert not LOCK_FILE.exists()
 
@@ -1176,6 +1185,7 @@ def test_accept_forwards_the_pending_handoff_unchanged(
         "node": "END",
         "visits": {"plan": 1},
         "spent_time": SPENT,
+        "spent_cost": 0,
     }
     assert not LOCK_FILE.exists()
 
@@ -1284,6 +1294,7 @@ def test_accept_into_end_completes_the_run(
         "node": "END",
         "visits": {"check": 1},
         "spent_time": SPENT,
+        "spent_cost": 0,
     }
 
 
@@ -1552,6 +1563,7 @@ def test_soft_limit_stops_the_run_before_the_next_node(
         "node": "wait",
         "visits": {"wait": 1},
         "spent_time": pytest.approx(0.3, abs=0.1),
+        "spent_cost": 0,
         "stopped": "budget",
         "reason": "node 'wait': soft time limit of 0.1 s reached",
     }
@@ -1649,6 +1661,7 @@ def test_hard_limit_cuts_the_node_run_as_a_failure(
         "node": "wait",
         "visits": {"wait": 1},
         "spent_time": pytest.approx(0.4, abs=0.1),
+        "spent_cost": 0,
         "stopped": "failure",
         "reason": "node 'wait': hard time limit of 0.3 s reached",
     }
@@ -1799,4 +1812,220 @@ def test_status_reports_a_budget_stop_with_the_effective_limits(
     assert capsys.readouterr().out == (
         "stopped at 'wait': budget\nnode 'wait': soft time limit of 0.1 s reached\n"
         "spent time: 0 s\nsoft limit: 0.1 s\nhard limit: 3600 s\n"
+    )
+
+
+COST = """
+start = "plan"
+
+[budget]
+cost = 1.0
+
+[defaults]
+harness = "claude"
+model = "opus"
+effort = "high"
+
+[nodes.plan]
+agent = "planner"
+outcomes = ["done"]
+
+[nodes.plan.transitions]
+done = "build"
+
+[nodes.build]
+agent = "builder"
+outcomes = ["done"]
+
+[nodes.build.transitions]
+done = "END"
+"""
+
+COST_MAP = """
+start = "checks"
+
+[budget]
+cost = 1.0
+
+[defaults]
+harness = "claude"
+model = "opus"
+effort = "high"
+
+[nodes.checks]
+map = ["lint", "test", "review"]
+resolve = "all"
+
+[nodes.checks.transitions]
+pass = "END"
+fail = "END"
+
+[nodes.lint]
+command = "true"
+
+[nodes.test]
+agent = "tester"
+outcomes = ["pass"]
+
+[nodes.review]
+agent = "reviewer"
+outcomes = ["pass"]
+"""
+
+
+def cost_run(project: Path, *costs: float | None) -> None:
+    """Write the COST workflow and queue one planner or builder response per cost."""
+    write(project, "cost", COST)
+    for agent in ("planner", "builder"):
+        write_agent(project, agent, f"You are the {agent}.")
+    respond(project, *(outcome_response("done", f"plan {i}", cost) for i, cost in enumerate(costs)))
+
+
+def test_cost_limit_stops_the_run_before_the_next_node(
+    dirs: tuple[Path, Path], fake_claude: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    cost_run(project, 1.0)
+    assert main(["run", "cost", "input"]) == 5
+    captured = capsys.readouterr()
+    assert captured.out == "plan: done\nbuild: budget\n"
+    assert captured.err == "node 'build': cost limit of 1 USD reached\n"
+    assert read_state() == {
+        "workflow": "cost",
+        "input": "input",
+        "node": "build",
+        "visits": {"plan": 1},
+        "handoff": ["plan", "plan 0"],
+        "spent_time": SPENT,
+        "spent_cost": 1.0,
+        "stopped": "budget",
+        "reason": "node 'build': cost limit of 1 USD reached",
+    }
+
+
+def test_cost_stop_resume_needs_a_sufficient_grant(
+    dirs: tuple[Path, Path], fake_claude: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    cost_run(project, 1.5)
+    assert main(["run", "cost", "input"]) == 5
+    before = read_state()
+    capsys.readouterr()
+    assert main(["resume"]) == 1
+    assert capsys.readouterr().err == (
+        "the run is at or past its cost limit of 1 USD; pass --add-cost to resume\n"
+    )
+    assert main(["resume", "--add-cost", "0.25"]) == 1
+    assert capsys.readouterr().err == (
+        "the run is at or past its cost limit of 1.25 USD; pass --add-cost to resume\n"
+    )
+    assert read_state() == before
+    assert not LOCK_FILE.exists()
+
+
+def test_cost_grant_enters_the_node_as_a_grace_entry_and_accumulates(
+    dirs: tuple[Path, Path], fake_claude: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    cost_run(project, 1.5, 0.5)
+    assert main(["run", "cost", "input"]) == 5
+    STATE_FILE.write_text(json.dumps({**read_state(), "added_cost": 0.3}))
+    capsys.readouterr()
+    assert main(["resume", "--add-cost", "0.5"]) == 0
+    assert capsys.readouterr().out == "build: done\n"
+    assert flag_value(spawn_args(project)[1], "-p") == "input\n\nHandoff from plan:\nplan 0"
+    assert read_state()["visits"] == {"plan": 1}
+    assert read_state()["added_cost"] == 0.8
+    assert read_state()["spent_cost"] == 2.0
+
+
+def test_map_sums_the_costs_of_its_fanned_out_agents(
+    dirs: tuple[Path, Path], fake_claude: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    write(project, "checks", COST_MAP)
+    for agent in ("tester", "reviewer"):
+        write_agent(project, agent, f"You are the {agent}.")
+    respond_agent(project, "tester", outcome_response("pass", cost=0.75))
+    respond_agent(project, "reviewer", json.dumps({"is_error": True, "total_cost_usd": 0.5}))
+    assert main(["run", "checks", "input"]) == 0
+    assert read_state()["spent_cost"] == 1.25
+
+
+@pytest.mark.parametrize("cost", [None, "abc", [1]])
+def test_a_result_without_a_numeric_cost_adds_nothing(
+    dirs: tuple[Path, Path], fake_claude: None, capsys: pytest.CaptureFixture[str], cost: object
+) -> None:
+    project, _ = dirs
+    cost_run(project, 0.5)
+    respond(
+        project,
+        json.dumps({"structured_output": {"outcome": "done"}, "total_cost_usd": cost}),
+        outcome_response("done", cost=0.5),
+    )
+    assert main(["run", "cost", "input"]) == 0
+    assert read_state()["spent_cost"] == 0.5
+
+
+def test_a_failed_agent_run_counts_its_cost(
+    dirs: tuple[Path, Path], fake_claude: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    cost_run(project)
+    respond(project, json.dumps({"structured_output": {}, "total_cost_usd": 0.5}))
+    assert main(["run", "cost", "input"]) == 2
+    assert read_state()["spent_cost"] == 0.5
+    assert read_state()["stopped"] == "failure"
+
+
+def test_spent_cost_and_grants_survive_an_escalation(
+    dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    write(project, "spin", SPIN.replace('LIMIT = "END"\n', ""))
+    STATE_FILE.parent.mkdir(exist_ok=True)
+    state = {"workflow": "spin", "input": "input", "node": "spin", "visits": {"spin": 2}}
+    STATE_FILE.write_text(json.dumps({**state, "spent_cost": 0.5, "added_cost": 0.25}))
+    assert main(["resume"]) == 3
+    assert read_state()["stopped"] == "limit"
+    assert read_state()["spent_cost"] == 0.5
+    assert read_state()["added_cost"] == 0.25
+
+
+def test_cost_grant_without_a_declared_cost_limit_refuses_the_resume(
+    dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    write(project, "broken", BROKEN)
+    assert main(["run", "broken", "input"]) == 2
+    before = read_state()
+    capsys.readouterr()
+    assert main(["resume", "--add-cost", "5"]) == 1
+    assert capsys.readouterr().err == "the workflow declares no cost limit; drop --add-cost\n"
+    assert read_state() == before
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "abc", "nan"])
+def test_non_positive_cost_grant_is_a_usage_error(
+    dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str], value: str
+) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        main(["resume", "--add-cost", value])
+    assert excinfo.value.code == 2
+    assert f"invalid cost '{value}': expected a positive USD number" in capsys.readouterr().err
+
+
+def test_status_reports_a_cost_stop_with_the_effective_limits(
+    dirs: tuple[Path, Path], fake_claude: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    cost_run(project, 1.5)
+    write(project, "cost", COST.replace("cost = 1.0", "cost = 1.0\ntime_soft = 60"))
+    assert main(["run", "cost", "input"]) == 5
+    STATE_FILE.write_text(json.dumps({**read_state(), "added_cost": 0.25}))
+    capsys.readouterr()
+    assert main(["status"]) == 0
+    assert capsys.readouterr().out == (
+        "stopped at 'build': budget\nnode 'build': cost limit of 1 USD reached\n"
+        "spent time: 0 s\nsoft limit: 60 s\nspent cost: 1.50 USD\ncost limit: 1.25 USD\n"
     )

@@ -27,6 +27,11 @@ class NothingToResume(Exception):
 class NodeFailure(Exception):
     """A node run ended without an outcome; the run stops."""
 
+    def __init__(self, message: str, cost: float = 0.0) -> None:
+        super().__init__(message)
+        # The cost the harness reported before the failure, so the run still counts it.
+        self.cost = cost
+
 
 class Escalation(Exception):
     """A node hit its visit limit and has no LIMIT transition; the run stops."""
@@ -37,7 +42,7 @@ class Park(Exception):
 
 
 class BudgetStop(Exception):
-    """The spent time reached a limit of the time budget; the run stops."""
+    """A spent amount reached a limit of a budget; the run stops."""
 
 
 class DecisionError(Exception):
@@ -94,7 +99,14 @@ def time_limits(workflow: dict[str, Any], state: dict[str, Any]) -> dict[str, fl
     return {
         key.removeprefix("time_"): limit + added
         for key, limit in workflow.get("budget", {}).items()
+        if key.startswith("time_")
     }
+
+
+def cost_limit(workflow: dict[str, Any], state: dict[str, Any]) -> float | None:
+    """Return the effective cost limit: the declared limit plus the grants; None when undeclared."""
+    limit = workflow.get("budget", {}).get("cost")
+    return None if limit is None else limit + state.get("added_cost", 0)
 
 
 def resume_run(
@@ -104,6 +116,7 @@ def resume_run(
     decision: str | None = None,
     feedback: str | None = None,
     add_time: float | None = None,
+    add_cost: float | None = None,
 ) -> None:
     """Resume the stopped run from its saved state.
 
@@ -112,9 +125,10 @@ def resume_run(
     transition for the decision instead: accept forwards the pending handoff,
     reject delivers the feedback as JSON. Every resume causes a grace entry: the
     entry does not count toward the visit limit.
-    add_time grants seconds to every declared time limit; grants accumulate.
-    resume_run raises DecisionError when the flags do not fit the run, or when
-    the spent time is at or past an effective limit after the grant.
+    add_time grants seconds to every declared time limit and add_cost grants
+    USD to the declared cost limit; grants accumulate. resume_run raises
+    DecisionError when the flags do not fit the run, or when a spent amount is
+    at or past an effective limit after the grants.
     """
     current = state["node"]
     stopped = state.get("stopped")
@@ -129,6 +143,15 @@ def resume_run(
                 f"the run is at or past its {kind} time limit of {limit:g} s;"
                 " pass --add-time to resume"
             )
+    if add_cost is not None:
+        if cost_limit(workflow, state) is None:
+            raise DecisionError("the workflow declares no cost limit; drop --add-cost")
+        state["added_cost"] = state.get("added_cost", 0) + add_cost
+    cost = cost_limit(workflow, state)
+    if cost is not None and state.get("spent_cost", 0) >= cost:
+        raise DecisionError(
+            f"the run is at or past its cost limit of {cost:g} USD; pass --add-cost to resume"
+        )
     if decision is not None:
         print(f"{current}: {decision}", flush=True)
         if decision == "reject":
@@ -174,12 +197,14 @@ def _run_nodes(
     nodes = workflow["nodes"]
     defaults = workflow.get("defaults", {})
     limits = time_limits(workflow, state)
+    cost = cost_limit(workflow, state)
     run_input = state["input"]
     visits = state["visits"]
     current = state["node"]
     saved = state.get("handoff")
     handoff = (saved[0], saved[1]) if saved else None
     state.setdefault("spent_time", 0.0)
+    state.setdefault("spent_cost", 0.0)
     diverted: set[str] = set()
     while current != END:
         node = nodes[current]
@@ -211,6 +236,10 @@ def _run_nodes(
                 print(f"{current}: budget", flush=True)
                 reason = f"node '{current}': {kind} time limit of {limits[kind]:g} s reached"
                 raise _stop(BudgetStop(reason), state, directory, current, handoff, "budget")
+        if cost is not None and state["spent_cost"] >= cost:
+            print(f"{current}: budget", flush=True)
+            reason = f"node '{current}': cost limit of {cost:g} USD reached"
+            raise _stop(BudgetStop(reason), state, directory, current, handoff, "budget")
         if grace:
             grace = False
         else:
@@ -219,20 +248,24 @@ def _run_nodes(
         started = time.monotonic()
         try:
             if "agent" in node:
-                outcome, handoff_text = _run_agent(
+                outcome, handoff_text, node_cost = _run_agent(
                     current, node, defaults, run_input, handoff, directory, hard, spent
                 )
             elif "map" in node:
-                outcome, handoff_text = _run_map(
+                outcome, handoff_text, node_cost = _run_map(
                     current, node, nodes, defaults, run_input, handoff, directory, hard, spent
                 )
             else:
-                outcome, handoff_text = _run_command(current, node, directory, hard, spent), None
+                outcome, handoff_text, node_cost = _run_command(
+                    current, node, directory, hard, spent
+                )
         except NodeFailure as error:
             state["spent_time"] += time.monotonic() - started
+            state["spent_cost"] += error.cost
             print(f"{current}: failure", flush=True)
             raise _stop(error, state, directory, current, handoff, "failure") from None
         state["spent_time"] += time.monotonic() - started
+        state["spent_cost"] += node_cost
         if "agent" in node:
             # workgraph discards the handoff after delivering it to an agent.
             handoff = None
@@ -286,9 +319,10 @@ def _spawn(
 
 def _run_command(
     name: str, node: dict[str, Any], directory: Path, hard: float | None, spent: float
-) -> str:
+) -> tuple[str, None, float]:
+    """Run the command; a command node reports no handoff and no cost."""
     completed = _spawn(name, node["command"], directory, hard, spent)
-    return "pass" if completed.returncode == 0 else "fail"
+    return ("pass" if completed.returncode == 0 else "fail"), None, 0.0
 
 
 def _run_map(
@@ -301,8 +335,8 @@ def _run_map(
     directory: Path,
     hard: float | None,
     spent: float,
-) -> tuple[str, str | None]:
-    def run_child(child: str) -> tuple[str, str | None]:
+) -> tuple[str, str | None, float]:
+    def run_child(child: str) -> tuple[str, str | None, float]:
         child_node = nodes[child]
         try:
             if "agent" in child_node:
@@ -310,10 +344,10 @@ def _run_map(
                     child, child_node, defaults, run_input, handoff, directory, hard, spent
                 )
             else:
-                result = _run_command(child, child_node, directory, hard, spent), None
-        except NodeFailure:
+                result = _run_command(child, child_node, directory, hard, spent)
+        except NodeFailure as error:
             # A fanned-out node's failure counts as not passing; the run continues.
-            result = "fail", None
+            result = "fail", None, error.cost
         print(f"{name}/{child}: {result[0]}", flush=True)
         return result
 
@@ -321,13 +355,15 @@ def _run_map(
     with ThreadPoolExecutor(max_workers=len(children)) as pool:
         results = list(pool.map(run_child, children))
     resolve = all if node["resolve"] == "all" else any
-    outcome = "pass" if resolve(child_outcome == "pass" for child_outcome, _ in results) else "fail"
+    outcome = (
+        "pass" if resolve(child_outcome == "pass" for child_outcome, _, _ in results) else "fail"
+    )
     blocks = [
         f"{child}:\n{text}"
-        for child, (_, text) in zip(children, results, strict=True)
+        for child, (_, text, _) in zip(children, results, strict=True)
         if text is not None
     ]
-    return outcome, "\n\n".join(blocks) if blocks else None
+    return outcome, "\n\n".join(blocks) if blocks else None, sum(cost for _, _, cost in results)
 
 
 def _run_agent(
@@ -339,7 +375,8 @@ def _run_agent(
     directory: Path,
     hard: float | None,
     spent: float,
-) -> tuple[str, str | None]:
+) -> tuple[str, str | None, float]:
+    """Run the agent; return its outcome, handoff, and the USD cost the harness reported."""
     # The definition resolves from the invocation directory (the process cwd);
     # only the spawned agent executes in the target directory.
     definition = _load_agent_definition(name, node["agent"])
@@ -355,14 +392,19 @@ def _run_agent(
         result = json.loads(completed.stdout)
     except json.JSONDecodeError as error:
         raise NodeFailure(f"node '{name}': agent output is not JSON: {error}") from error
+    try:
+        cost = float(result.get("total_cost_usd") or 0)
+    except (TypeError, ValueError):
+        # A malformed cost counts as zero; the run continues.
+        cost = 0.0
     if result.get("is_error"):
-        raise NodeFailure(f"node '{name}': agent reported an error")
+        raise NodeFailure(f"node '{name}': agent reported an error", cost)
     output = result.get("structured_output")
     outcome = output.get("outcome") if isinstance(output, dict) else None
     if outcome not in node["outcomes"]:
-        raise NodeFailure(f"node '{name}': agent reported no outcome from {node['outcomes']}")
+        raise NodeFailure(f"node '{name}': agent reported no outcome from {node['outcomes']}", cost)
     handoff_text = output.get("handoff")
-    return str(outcome), str(handoff_text) if handoff_text is not None else None
+    return str(outcome), str(handoff_text) if handoff_text is not None else None, cost
 
 
 def _agent_argv(

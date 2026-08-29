@@ -212,6 +212,18 @@ def test_budget_limits_load_as_seconds(dirs: tuple[Path, Path]) -> None:
     assert load_workflow("budgeted")["budget"] == {"time_soft": 1800.0, "time_hard": 2700.0}
 
 
+def test_cost_limit_loads_as_usd_with_or_without_time_limits(dirs: tuple[Path, Path]) -> None:
+    project, _ = dirs
+    write(project, "both", BUDGETED + "cost = 5\n")
+    assert load_workflow("both")["budget"] == {
+        "time_soft": 1800.0,
+        "time_hard": 2700.0,
+        "cost": 5.0,
+    }
+    write(project, "alone", MINIMAL + "\n[budget]\ncost = 0.5\n")
+    assert load_workflow("alone")["budget"] == {"cost": 0.5}
+
+
 def test_one_budget_limit_loads_alone(dirs: tuple[Path, Path]) -> None:
     project, _ = dirs
     write(project, "budgeted", MINIMAL + '\n[budget]\ntime_hard = "1h"\n')
@@ -266,7 +278,29 @@ BAD = [
         "[budget]: time_soft: invalid duration True",
         id="boolean-limit",
     ),
-    pytest.param(BUDGETED + "cost = 5\n", "[budget]: unknown key 'cost'", id="unknown-budget-key"),
+    pytest.param(
+        BUDGETED + "tokens = 5\n", "[budget]: unknown key 'tokens'", id="unknown-budget-key"
+    ),
+    pytest.param(
+        BUDGETED + "cost = 0\n",
+        "[budget]: cost: invalid cost 0: expected a positive USD number",
+        id="zero-cost",
+    ),
+    pytest.param(
+        BUDGETED + "cost = -1.5\n",
+        "[budget]: cost: invalid cost -1.5: expected a positive USD number",
+        id="negative-cost",
+    ),
+    pytest.param(
+        BUDGETED + 'cost = "5 USD"\n',
+        "[budget]: cost: invalid cost '5 USD': expected a positive USD number",
+        id="cost-not-a-number",
+    ),
+    pytest.param(
+        BUDGETED + "cost = true\n",
+        "[budget]: cost: invalid cost True: expected a positive USD number",
+        id="cost-bool",
+    ),
     pytest.param("budget = 5\n" + MINIMAL, "[budget] must be a table", id="budget-not-a-table"),
     pytest.param(MINIMAL.replace('start = "check"', "start ="), "invalid TOML", id="invalid-toml"),
     pytest.param(

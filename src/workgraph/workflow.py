@@ -11,7 +11,8 @@ LIMIT = "LIMIT"
 RESERVED_NAMES = frozenset({END, LIMIT})
 SETTINGS = ("harness", "model", "effort")
 KINDS = ("agent", "command", "map", "gate")
-BUDGET_KEYS = ("time_soft", "time_hard")
+TIME_KEYS = ("time_soft", "time_hard")
+BUDGET_KEYS = (*TIME_KEYS, "cost")
 DURATION = re.compile(r"(\d+(?:\.\d+)?)([smh]?)")
 UNITS = {"": 1, "s": 1, "m": 60, "h": 3600}
 
@@ -50,6 +51,23 @@ def parse_duration(value: object) -> float:
     if seconds <= 0:
         raise ValueError(f"invalid duration {value!r}: must be positive")
     return seconds
+
+
+def parse_cost(value: object) -> float:
+    """Return the USD a cost denotes: a positive number, or its string form.
+
+    parse_cost raises ValueError for any other input.
+    """
+    message = f"invalid cost {value!r}: expected a positive USD number"
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        raise ValueError(message)
+    try:
+        usd = float(value)
+    except ValueError:
+        raise ValueError(message) from None
+    if not usd > 0:
+        raise ValueError(message)
+    return usd
 
 
 def to_mermaid(workflow: dict[str, Any]) -> str:
@@ -99,7 +117,7 @@ def _validate(workflow_name: str, data: dict[str, Any]) -> None:
 
 
 def _validate_budget(workflow_name: str, budget: dict[str, Any]) -> dict[str, float]:
-    """Check the budget keys and return the limits in seconds."""
+    """Check the budget keys and return the time limits in seconds and the cost limit in USD."""
     if not isinstance(budget, dict):
         raise WorkflowError(f"{workflow_name}: [budget] must be a table")
     limits: dict[str, float] = {}
@@ -107,7 +125,7 @@ def _validate_budget(workflow_name: str, budget: dict[str, Any]) -> dict[str, fl
         if key not in BUDGET_KEYS:
             raise WorkflowError(f"{workflow_name}: [budget]: unknown key '{key}'")
         try:
-            limits[key] = parse_duration(value)
+            limits[key] = parse_cost(value) if key == "cost" else parse_duration(value)
         except ValueError as error:
             raise WorkflowError(f"{workflow_name}: [budget]: {key}: {error}") from error
     if limits.get("time_hard", math.inf) < limits.get("time_soft", 0):

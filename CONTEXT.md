@@ -59,7 +59,7 @@ A node run ending without an outcome; the run stops.
 _Avoid_: Crash
 
 **Resume**:
-Restarting a stopped run at the node where it stopped, from the run's saved state. Resuming a parked run delivers a decision to the gate node instead of re-running it. The first entry of every resume is the grace entry: it does not count toward the visit limit. A run at or past a limit of its time budget resumes only with a grant that raises the limit above the spent time.
+Restarting a stopped run at the node where it stopped, from the run's saved state. Resuming a parked run delivers a decision to the gate node instead of re-running it. The first entry of every resume is the grace entry: it does not count toward the visit limit. A run at or past a limit of a budget resumes only with a grant that raises the limit above the spent amount.
 
 **Outcome**:
 One value from a node's closed set of possible results.
@@ -103,6 +103,10 @@ _Avoid_: Elapsed time, runtime, duration
 **Cost budget**:
 The USD bound a workflow declares for a run, measured against spent cost. A run at or past the bound stops before entering its next node; the node run in progress finishes.
 _Avoid_: Usage budget, money budget, spend limit
+
+**Cost limit**:
+The spent cost at which a run stops before entering its next node: the declared cost budget plus the grants.
+_Avoid_: Cap, ceiling, spend limit
 
 **Spent cost**:
 The sum of the USD costs the harness reports for a run's agent node runs, carried across resumes. A command node adds nothing.
