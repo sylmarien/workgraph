@@ -6,12 +6,12 @@ The workflow gets a `ship` gate before `pr` so a park can be shown.
   A  chain of node runs in journal order (the #54 diamonds), wrapped to the terminal width
   B  the `viz` graph with the path marked (termaid)
   C  B plus one path line in journal order
-  D  A vertical: progress downward, fan-outs rightward
+  D  A vertical: progress downward, fan-outs rightward; colored on a terminal, Nerd Font glyphs with --rich
   E  B plus D
 
 Run from the repo root:
 
-  uv run python src/workgraph/prototype_path.py -v A|B|C|D|E -s fanout|limit|parked|running|ended [--follow] [--ascii]
+  uv run python src/workgraph/prototype_path.py -v A|B|C|D|E -s fanout|limit|parked|running|ended [--follow] [--ascii] [--rich]
 """
 
 import argparse
@@ -22,6 +22,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from rich.console import Console
+from rich.text import Text
 from termaid import render_rich
 
 from workgraph.workflow import END, LIMIT, load_workflow
@@ -248,41 +249,76 @@ def chain(steps: list[tuple[str, Any]], now: datetime, width: int) -> str:
 
 # --- variant D: vertical chain ---------------------------------------------
 
+# Glyph sets: plain unicode, or Nerd Font (--rich).
+GLYPHS = {
+    "plain": {"past": "◇", "current": "◆", "failure": "✗", "limit": "┆", "gate": "⬡", "parked": "⬡", "end": "END", "stop": "✗"},
+    "nerd": {"past": "\uf058", "current": "\uf144", "failure": "\uf057", "limit": "\uf071", "gate": "\uf007", "parked": "\uf28b", "end": "\uf11e END", "stop": "\uf057"},
+}
 
-def vchain(steps: list[tuple[str, Any]], now: datetime) -> str:
+
+def outcome_style(outcome: str | None) -> str:
+    return "red" if outcome in ("fail", "reject", "failure") else "green"
+
+
+def vchain(steps: list[tuple[str, Any]], now: datetime, g: dict[str, str]) -> Text:
     names = max((len(nr["name"]) for k, nr in steps if k == "run"), default=0)
 
-    def node_line(nr: dict[str, Any], pad: int = 0) -> str:
-        return f"{glyph(nr)} {nr['name'].ljust(pad)}  {dur(nr, now)}"
+    def node_line(nr: dict[str, Any], pad: int = 0) -> Text:
+        t = Text()
+        if running(nr):
+            t.append(g["current"] + " ", "bold green")
+            t.append(nr["name"].ljust(pad), "bold")
+            t.append("  " + dur(nr, now), "bold green")
+        else:
+            failed = nr["outcome"] == "failure"
+            t.append((g["failure"] if failed else g["past"]) + " ", outcome_style(nr["outcome"]))
+            t.append(nr["name"].ljust(pad))
+            t.append("  " + dur(nr, now), "dim")
+        return t
 
-    rows: list[tuple[str, str]] = []
+    def edge(label: str) -> Text:
+        return Text().append("│ ", "dim").append(label, outcome_style(label))
+
+    rows: list[tuple[Text, Text]] = []
     for i, (kind, s) in enumerate(steps):
         if kind == "run":
-            left = [node_line(s, names)] + ([f"│ {s['outcome']}"] if s["end"] else [])
+            left = [node_line(s, names)] + ([edge(s["outcome"])] if s["end"] else [])
             right = []
             n = len(s["children"])
             for j, c in enumerate(s["children"]):
                 conn = ("─" if n == 1 else "┬") if j == 0 else "└" if j == n - 1 else "├"
-                right.append(f"{conn} {node_line(c)}  {c['outcome'] or ''}".rstrip())
+                line = Text().append(conn + " ", "dim").append_text(node_line(c))
+                if c["outcome"]:
+                    line.append("  " + c["outcome"], outcome_style(c["outcome"]))
+                right.append(line)
             while len(left) < len(right):
-                left.append("│" if s["end"] else "")
-            rows += [(left[k], right[k] if k < len(right) else "") for k in range(len(left))]
+                left.append(Text().append("│", "dim") if s["end"] else Text())
+            rows += [(left[k], right[k] if k < len(right) else Text()) for k in range(len(left))]
         elif kind == "limit":
-            rows.append((f"┆ {s['node']} → LIMIT", ""))
+            rows.append((Text(f"{g['limit']} {s['node']} → LIMIT", "yellow"), Text()))
         elif kind == "stop" and s["reason"] == "gate":
             resumed = i + 1 < len(steps) and steps[i + 1][0] == "resume"
             waited = (parse(steps[i + 1][1]["time"]) if resumed else now) - parse(s["time"])
-            rows.append((f"⬡ {s['node'].ljust(names)}  {'' if resumed else 'parked '}{fmt(waited.total_seconds())}", ""))
+            t = Text().append(f"{g['gate'] if resumed else g['parked']} ", "yellow" if resumed else "bold yellow")
+            t.append(s["node"].ljust(names), "" if resumed else "bold")
+            t.append(f"  {'' if resumed else 'parked '}{fmt(waited.total_seconds())}", "dim" if resumed else "bold yellow")
+            rows.append((t, Text()))
         elif kind == "stop":
-            rows.append((END if s["reason"] == "end" else f"✗ {s['reason']}", ""))
+            rows.append((Text(g["end"], "bold green") if s["reason"] == "end" else Text(f"{g['stop']} {s['reason']}", "bold red"), Text()))
         elif kind == "resume":
-            rows.append((f"│ {s['decision']}", ""))
-    width = max(len(left) for left, _ in rows) + 1
-    out = []
+            rows.append((edge(s["decision"]), Text()))
+    width = max(left.cell_len for left, _ in rows) + 1
+    lines = []
     for left, right in rows:
-        fill = "─" if right[:1] in ("─", "┬") else " "
-        out.append(((left + " ").ljust(width, fill) + right).rstrip())
-    return "\n".join(out)
+        line = left.copy()
+        line.append(" ")
+        line.pad_right(width - line.cell_len, "─" if right.plain[:1] in ("─", "┬") else " ")
+        if right.plain[:1] in ("─", "┬"):
+            line.stylize("dim", left.cell_len, width)
+        line.append_text(right)
+        line.rstrip()
+        lines.append(line)
+    return Text("\n").join(lines)
 
 
 # --- variant B: graph ------------------------------------------------------
@@ -374,12 +410,12 @@ def path_line(steps: list[tuple[str, Any]], now: datetime, width: int) -> str:
 # --- driver ----------------------------------------------------------------
 
 
-def render(wf: dict[str, Any], events: list[dict[str, Any]], now: datetime, variant: str, use_ascii: bool, console: Console) -> None:
+def render(wf: dict[str, Any], events: list[dict[str, Any]], now: datetime, variant: str, use_ascii: bool, console: Console, g: dict[str, str] = GLYPHS["plain"]) -> None:
     steps = model(events)
     if variant == "A":
         console.print(chain(steps, now, console.width), highlight=False, markup=False)
     elif variant == "D":
-        console.print(vchain(steps, now), highlight=False, markup=False)
+        console.print(vchain(steps, now, g))
     else:
         console.print(render_rich(mermaid(wf, steps, now), use_ascii=use_ascii, padding_y=0, padding_x=4), soft_wrap=True)
         if variant == "C":
@@ -387,9 +423,11 @@ def render(wf: dict[str, Any], events: list[dict[str, Any]], now: datetime, vari
             console.print(path_line(steps, now, console.width), highlight=False, markup=False)
         elif variant == "E":
             console.print()
-            console.print(vchain(steps, now), highlight=False, markup=False)
+            console.print(vchain(steps, now, g))
     console.print()
-    console.print(f"run: dev \"#62\" · {status(wf, steps, now)}", highlight=False, markup=False)
+    line = status(wf, steps, now)
+    style = "yellow" if line.startswith("parked") else "green" if line in ("stopped: end",) or line.startswith("running") else "red"
+    console.print(Text('run: dev "#62" · ') + Text(line, style))
 
 
 def main() -> None:
@@ -398,26 +436,28 @@ def main() -> None:
     p.add_argument("-s", "--scenario", choices=[*CUTS, "ended"], default="running")
     p.add_argument("--follow", action="store_true", help="replay the journal, redrawing on every event")
     p.add_argument("--ascii", action="store_true")
+    p.add_argument("--rich", action="store_true", help="Nerd Font glyphs in D and E")
     p.add_argument("--mermaid", action="store_true", help="print the mermaid source of B")
     args = p.parse_args()
     wf = workflow_with_gate()
     events = cut(build_journal(wf), args.scenario)
     console = Console()
+    g = GLYPHS["nerd" if args.rich else "plain"]
     if args.mermaid:
         print(mermaid(wf, model(events), parse(events[-1]["time"]) + timedelta(seconds=12)))
         return
     if not args.follow:
-        render(wf, events, parse(events[-1]["time"]) + timedelta(seconds=12), args.variant, args.ascii, console)
+        render(wf, events, parse(events[-1]["time"]) + timedelta(seconds=12), args.variant, args.ascii, console, g)
         return
     for i in range(2, len(events) + 1):
         now = parse(events[i - 1]["time"]) + timedelta(seconds=1)
         sys.stdout.write("\x1b[2J\x1b[H")
-        render(wf, events[:i], now, args.variant, args.ascii, console)
+        render(wf, events[:i], now, args.variant, args.ascii, console, g)
         time.sleep(0.6)
     if events[-1]["event"] != "stop":
         for k in range(8):
             sys.stdout.write("\x1b[2J\x1b[H")
-            render(wf, events, now + timedelta(seconds=0.5 * k + 1), args.variant, args.ascii, console)
+            render(wf, events, now + timedelta(seconds=0.5 * k + 1), args.variant, args.ascii, console, g)
             time.sleep(0.5)
 
 
