@@ -32,7 +32,7 @@ Stopping a run at a gate node to wait for a decision. A park is neither a failur
 _Avoid_: Pause, suspend, block
 
 **Decision**:
-The outcome a human gives a parked run. `accept` forwards the pending handoff to the target node; `reject` returns feedback. The entry a `reject` causes does not count toward the target's visit limit.
+The outcome a human gives a parked run. `accept` forwards the pending handoff to the target node; `reject` returns feedback. The entry either decision causes is a grace entry.
 _Avoid_: Approval, verdict
 
 **Review material**:
@@ -59,7 +59,7 @@ A node run ending without an outcome; the run stops.
 _Avoid_: Crash
 
 **Resume**:
-Restarting a stopped run at the node where it stopped, from the run's saved state. The first re-entry (the grace entry) does not count toward the visit limit. Resuming a parked run delivers a decision to the gate node instead of re-running it.
+Restarting a stopped run at the node where it stopped, from the run's saved state. Resuming a parked run delivers a decision to the gate node instead of re-running it. The first entry of every resume is the grace entry: it does not count toward the visit limit. A run at or past a limit of its time budget resumes only with a grant that raises the limit above the spent time.
 
 **Outcome**:
 One value from a node's closed set of possible results.

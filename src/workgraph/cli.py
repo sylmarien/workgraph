@@ -12,6 +12,7 @@ from termaid.renderer.themes import THEMES
 
 from workgraph.run import (
     LOCK_FILE,
+    BudgetStop,
     DecisionError,
     Escalation,
     NodeFailure,
@@ -23,8 +24,9 @@ from workgraph.run import (
     read_state,
     resume_run,
     run_workflow,
+    time_limits,
 )
-from workgraph.workflow import END, WorkflowError, load_workflow, to_mermaid
+from workgraph.workflow import END, WorkflowError, load_workflow, parse_duration, to_mermaid
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -70,6 +72,11 @@ def _add_resume_parser(subparsers: "argparse._SubParsersAction[argparse.Argument
         "--decision", choices=["accept", "reject"], help="Decision for the gate the run parked at."
     )
     resume.add_argument("--feedback", help="Feedback delivered with a reject.")
+    resume.add_argument(
+        "--add-time",
+        type=_duration,
+        help="Grant the run more time: seconds, or a number with unit s, m, or h.",
+    )
 
 
 def _add_run_parser(subparsers: "argparse._SubParsersAction[argparse.ArgumentParser]") -> None:
@@ -119,6 +126,13 @@ def _directory(value: str) -> Path:
     return path
 
 
+def _duration(value: str) -> float:
+    try:
+        return parse_duration(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(error) from error
+
+
 def _run(args: argparse.Namespace) -> int:
     def action() -> None:
         run_workflow(args.workflow, load_workflow(args.workflow), args.input, args.directory)
@@ -130,7 +144,12 @@ def _resume(args: argparse.Namespace) -> int:
     def action() -> None:
         state = load_state(args.directory)
         resume_run(
-            load_workflow(state["workflow"]), state, args.directory, args.decision, args.feedback
+            load_workflow(state["workflow"]),
+            state,
+            args.directory,
+            args.decision,
+            args.feedback,
+            args.add_time,
         )
 
     return _report(action)
@@ -149,9 +168,14 @@ def _status(args: argparse.Namespace) -> int:
         else:
             stopped = state.get("stopped", "interrupted")
             print(f"stopped at '{node}': {stopped}")
+            if "reason" in state:
+                print(state["reason"])
+            workflow = load_workflow(state["workflow"])
             if stopped == "gate":
-                question = load_workflow(state["workflow"])["nodes"][node]["gate"]
-                print(park_report(question, state.get("handoff")))
+                print(park_report(workflow["nodes"][node]["gate"], state.get("handoff")))
+            print(f"spent time: {state.get('spent_time', 0):.0f} s")
+            for kind, limit in time_limits(workflow, state).items():
+                print(f"{kind} limit: {limit:g} s")
 
     return _report(action)
 
@@ -170,6 +194,9 @@ def _report(action: Callable[[], None]) -> int:
         return 3
     except Park:
         return 4
+    except BudgetStop as error:
+        print(error, file=sys.stderr)
+        return 5
     return 0
 
 

@@ -54,12 +54,15 @@ Requires Python 3.12+. Agent nodes additionally require the `claude` CLI on
 - `workgraph resume` — resume the stopped run in the current directory at the
   node where it stopped. `--decision accept|reject` delivers a decision to a
   parked run. `reject` requires `--feedback "<text>"`; `accept` does not
-  take it.
-- `workgraph status` — print one line about the run in the current directory:
-  `no run in <dir>` (exit 1), `a run is in progress at node '<node>'`,
-  `the run reached END`, or `stopped at '<node>': <gate|failure|limit>`. A
-  parked run also prints the gate question and the review material. A run
-  interrupted between node runs reports `interrupted` as its reason.
+  take it. `--add-time <duration>` grants the run more time (see
+  [Time budget](#time-budget)).
+- `workgraph status` — report the run in the current directory. The first
+  line is `no run in <dir>` (exit 1), `a run is in progress at node '<node>'`,
+  `the run reached END`, or `stopped at '<node>': <gate|failure|limit|budget>`.
+  A stopped run then prints the stop message when the run recorded one, the
+  gate question and the review material for a parked run, the spent time, and
+  each effective limit of the time budget. A run interrupted between node
+  runs reports `interrupted` in place of the stop.
 - `workgraph viz <workflow>` — print the workflow graph. `--unicode`
   (default), `--ascii`, or `--mermaid` for the mermaid source. The unicode and
   ascii styles widen the diagram to the terminal width. `--theme <name>` picks
@@ -93,13 +96,20 @@ Exit codes:
 - `3` — escalation: a node hit its visit limit and has no `LIMIT` transition.
 - `4` — park: a gate node waits for a decision. The output is the progress
   line `<gate>: parked`, the gate question, then the review material.
+- `5` — budget stop: the spent time reached a limit of the time budget. The
+  output is the progress line `<node>: budget`; the error names the limit.
 
-After a failure or an escalation, `workgraph resume` restarts the run at the
-stopped node. The first re-entry does not count toward the visit limit. After
-a park, `workgraph resume --decision accept|reject` prints `<gate>: <decision>`
-and follows the matching transition without re-running the gate. The entry a
-`reject` causes does not count toward the target's visit limit. A run that
-reached `END` cannot be resumed.
+`workgraph resume` restarts a stopped run; a run that reached `END` cannot
+be resumed. What the resume does depends on the stop:
+
+- After a failure, an escalation, or a budget stop, the run enters the
+  stopped node.
+- After a park, `--decision accept|reject` prints `<gate>: <decision>` and
+  follows the matching transition without re-running the gate.
+
+The first entry of every resume is a grace entry: it does not count toward
+the visit limit. A run at or past a limit of its time budget resumes only
+with `--add-time`; otherwise `resume` refuses (exit 1) and changes nothing.
 
 ## Workflow files
 
@@ -156,6 +166,46 @@ accept = "build"             # both decisions need a transition
 reject = "implement"
 ```
 
+### Time budget
+
+A workflow may bound the wall-clock time a run spends in node runs:
+
+```toml
+[budget]
+time_soft = "30m"            # soft limit: stop before the next node
+time_hard = 2700             # hard limit: interrupt the node run in progress
+```
+
+- A duration is a bare number of seconds, or a string of a number with the
+  unit `s`, `m`, or `h`: `90`, `"90s"`, `"1.5m"`, `"2h"`. It must be positive.
+  The same grammar applies to `--add-time`.
+- Either key may be absent. `time_hard` must not be below `time_soft`. No
+  other key is accepted in `[budget]`.
+- Spent time is the sum of the wall-clock durations of the run's node runs,
+  carried across resumes. A map node's run counts once, as the wall-clock of
+  the fan-out. Time while the run is stopped does not count. The run state
+  stores it as `spent_time`.
+- Soft limit: before entering a node, when the spent time is at or past a
+  limit, the run stops with exit 5 and `stopped = "budget"`. The pending
+  handoff stays in the state; `workgraph resume --add-time <duration>`
+  enters that node as a grace entry.
+- Hard limit: workgraph kills a node run when the spent time reaches the
+  hard limit; each fanned-out node gets the time left at the start of the
+  fan-out. An interrupted node run is a failure (exit 2,
+  `stopped = "failure"`) whose message names the hard limit.
+  `resume --add-time <duration>` re-enters it as a grace entry. An
+  interrupted fanned-out node counts as not passing.
+- Every failure, escalation, and budget stop stores its message in the run
+  state as `reason`; `workgraph status` prints it.
+- `workgraph resume --add-time <duration>` grants the run more time. A grant
+  raises every declared limit by the amount, accumulates across resumes, and
+  is stored in the run state as `added_time`. A grant never creates a limit
+  the workflow did not declare. `resume` refuses, and records nothing, when
+  the workflow declares no time limit and `--add-time` is passed, or when the
+  spent time is still at or past a limit after the grant. Editing the
+  workflow file is the other way to raise the budget: `run` and `resume`
+  read it on each call.
+
 Rules, all validated at load time:
 
 - A node declares exactly one of `agent`, `command`, `map`, or `gate`.
@@ -180,6 +230,7 @@ Rules, all validated at load time:
   review material. `accept` forwards that handoff to the target unchanged.
   `reject` delivers a handoff from the gate whose text is JSON:
   `{"received": <pending handoff text or null>, "feedback": "<text>"}`.
+  The entry either decision causes is a grace entry.
 - Transitions are total: every outcome maps to a node name or `END`.
 - `END` and `LIMIT` are reserved. `END` as a transition target completes the
   run. A `LIMIT` transition key routes the node when its visit limit is

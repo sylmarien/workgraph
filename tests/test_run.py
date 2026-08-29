@@ -2,6 +2,7 @@
 
 import json
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -261,6 +262,10 @@ def read_state() -> dict[str, object]:
     return dict(json.loads(STATE_FILE.read_text()))
 
 
+# Node runs in these tests take milliseconds; the tolerance absorbs a slow machine.
+SPENT = pytest.approx(0, abs=1)
+
+
 def test_loop_of_shell_commands_runs_to_end(
     dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -273,6 +278,7 @@ def test_loop_of_shell_commands_runs_to_end(
         "input": "issue #5",
         "node": "END",
         "visits": {"check": 2},
+        "spent_time": SPENT,
     }
     assert not LOCK_FILE.exists()
 
@@ -334,7 +340,7 @@ def test_looping_limit_transitions_escalate(
     assert read_state()["stopped"] == "limit"
 
 
-@pytest.mark.parametrize("command", ["workgraph-no-such-cmd", ""])
+@pytest.mark.parametrize("command", ["workgraph-no-such-cmd", "", "sh -c 'unterminated"])
 def test_non_spawnable_command_stops_the_run(
     dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str], command: str
 ) -> None:
@@ -372,6 +378,7 @@ def test_state_is_written_after_each_node_run(dirs: tuple[Path, Path]) -> None:
         "input": "input",
         "node": "first",
         "visits": {"first": 1},
+        "spent_time": SPENT,
     }
     assert read_state()["visits"] == {"first": 1, "second": 1}
 
@@ -397,6 +404,7 @@ def test_two_agent_loop_runs_to_end(
         "input": "issue #9",
         "node": "END",
         "visits": {"plan": 2, "build": 2},
+        "spent_time": SPENT,
     }
     build_args = spawn_args(project)[1]
     assert json.loads(flag_value(build_args, "--agents")) == {
@@ -618,6 +626,7 @@ def test_resume_after_a_failure_completes_the_run(
         "input": "issue #5",
         "node": "END",
         "visits": {"check": 1},
+        "spent_time": SPENT,
     }
     assert not LOCK_FILE.exists()
 
@@ -807,6 +816,7 @@ def test_map_all_passes_when_every_fanned_out_node_passes(
         "input": "input",
         "node": "END",
         "visits": {"checks": 1},
+        "spent_time": SPENT,
     }
 
 
@@ -1137,6 +1147,7 @@ def test_run_parks_at_a_gate(dirs: tuple[Path, Path], capsys: pytest.CaptureFixt
         "node": "approve",
         "visits": {"check": 1},
         "stopped": "gate",
+        "spent_time": SPENT,
     }
     assert not LOCK_FILE.exists()
 
@@ -1163,9 +1174,25 @@ def test_accept_forwards_the_pending_handoff_unchanged(
         "workflow": "gated",
         "input": "issue #9",
         "node": "END",
-        "visits": {"plan": 1, "build": 1},
+        "visits": {"plan": 1},
+        "spent_time": SPENT,
     }
     assert not LOCK_FILE.exists()
+
+
+def test_accept_enters_the_target_as_a_grace_entry(
+    dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    gated = GATED.replace('accept = "END"', 'accept = "check"').replace(
+        '[nodes.check]\ncommand = "true"', '[nodes.check]\ncommand = "true"\nlimits.visits = 1'
+    )
+    write(project, "gated", gated)
+    assert main(["run", "gated", "input"]) == 4
+    capsys.readouterr()
+    assert main(["resume", "--decision", "accept"]) == 4
+    assert capsys.readouterr().out == "approve: accept\ncheck: pass\n" + PARKED
+    assert read_state()["visits"] == {"check": 1}
 
 
 def test_reject_delivers_the_feedback_as_a_json_handoff_from_the_gate(
@@ -1256,6 +1283,7 @@ def test_accept_into_end_completes_the_run(
         "input": "input",
         "node": "END",
         "visits": {"check": 1},
+        "spent_time": SPENT,
     }
 
 
@@ -1346,9 +1374,23 @@ def test_status_reports_a_run_that_reached_end(
 @pytest.mark.parametrize(
     ("workflow", "text", "line"),
     [
-        ("broken", BROKEN, "stopped at 'check': failure\n"),
-        ("spin", SPIN.replace('LIMIT = "END"\n', ""), "stopped at 'spin': limit\n"),
-        ("gated", GATED, "stopped at 'approve': gate\nShip it?\nNo review material.\n"),
+        (
+            "broken",
+            BROKEN,
+            "stopped at 'check': failure\nnode 'check': spawn failure:"
+            " [Errno 2] No such file or directory: 'workgraph-no-such-cmd'\nspent time: 0 s\n",
+        ),
+        (
+            "spin",
+            SPIN.replace('LIMIT = "END"\n', ""),
+            "stopped at 'spin': limit\nnode 'spin' reached its visit limit of 2"
+            " and has no LIMIT transition\nspent time: 0 s\n",
+        ),
+        (
+            "gated",
+            GATED,
+            "stopped at 'approve': gate\nShip it?\nNo review material.\nspent time: 0 s\n",
+        ),
     ],
 )
 def test_status_reports_the_stop_reason(
@@ -1378,7 +1420,7 @@ def test_status_shows_the_review_material_of_a_parked_run(
     assert main(["status"]) == 0
     assert capsys.readouterr().out == (
         "stopped at 'approve': gate\nShip the plan?\n"
-        "Review material from plan:\nSplit the work in two.\n"
+        "Review material from plan:\nSplit the work in two.\nspent time: 0 s\n"
     )
 
 
@@ -1386,12 +1428,13 @@ def test_status_reports_an_interrupted_run(
     dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
 ) -> None:
     # A run interrupted between node runs leaves state without a stop reason and no lock.
-    STATE_FILE.parent.mkdir()
+    project, _ = dirs
+    write(project, "loop", LOOP)
     STATE_FILE.write_text(
-        json.dumps({"workflow": "w", "input": "i", "node": "check", "visits": {}})
+        json.dumps({"workflow": "loop", "input": "i", "node": "check", "visits": {}})
     )
     assert main(["status"]) == 0
-    assert capsys.readouterr().out == "stopped at 'check': interrupted\n"
+    assert capsys.readouterr().out == "stopped at 'check': interrupted\nspent time: 0 s\n"
 
 
 def test_status_honors_the_directory_flag(
@@ -1404,3 +1447,356 @@ def test_status_honors_the_directory_flag(
     assert main(["status"]) == 1
     assert main(["--directory", str(target), "status"]) == 0
     assert capsys.readouterr().out.startswith("stopped at 'approve': gate\n")
+
+
+SOFT = """
+start = "wait"
+
+[budget]
+time_soft = 0.1
+
+[nodes.wait]
+command = "sleep 0.2"
+
+[nodes.wait.limits]
+visits = 3
+
+[nodes.wait.transitions]
+pass = "wait"
+fail = "wait"
+LIMIT = "END"
+"""
+
+HARD = """
+start = "wait"
+
+[budget]
+time_hard = 0.3
+
+[nodes.wait]
+command = "sh -c 'test -f flag || { touch flag; exec sleep 5; }'"
+
+[nodes.wait.transitions]
+pass = "END"
+fail = "END"
+"""
+
+SOFT_HANDOFF = """
+start = "plan"
+
+[budget]
+time_soft = "0.1s"
+
+[defaults]
+harness = "claude"
+model = "opus"
+effort = "high"
+
+[nodes.plan]
+agent = "planner"
+outcomes = ["done"]
+
+[nodes.plan.transitions]
+done = "wait"
+
+[nodes.wait]
+command = "sleep 0.2"
+
+[nodes.wait.transitions]
+pass = "build"
+fail = "build"
+
+[nodes.build]
+agent = "builder"
+outcomes = ["done"]
+
+[nodes.build.transitions]
+done = "END"
+"""
+
+PARALLEL_SLEEPS = """
+start = "checks"
+
+[nodes.checks]
+map = ["slow", "slower"]
+resolve = "all"
+
+[nodes.checks.transitions]
+pass = "END"
+fail = "checks"
+
+[nodes.slow]
+command = "sleep 0.3"
+
+[nodes.slower]
+command = "sleep 0.3"
+"""
+
+
+def spent_time() -> float:
+    return float(str(read_state()["spent_time"]))
+
+
+def test_soft_limit_stops_the_run_before_the_next_node(
+    dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    write(project, "soft", SOFT)
+    assert main(["run", "soft", "input"]) == 5
+    captured = capsys.readouterr()
+    assert captured.out == "wait: pass\nwait: budget\n"
+    assert captured.err == "node 'wait': soft time limit of 0.1 s reached\n"
+    assert read_state() == {
+        "workflow": "soft",
+        "input": "input",
+        "node": "wait",
+        "visits": {"wait": 1},
+        "spent_time": pytest.approx(0.3, abs=0.1),
+        "stopped": "budget",
+        "reason": "node 'wait': soft time limit of 0.1 s reached",
+    }
+    assert not LOCK_FILE.exists()
+
+
+def test_resume_past_a_limit_needs_a_grant(
+    dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    write(project, "soft", SOFT)
+    assert main(["run", "soft", "input"]) == 5
+    before = read_state()
+    capsys.readouterr()
+    assert main(["resume"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert (
+        captured.err
+        == "the run is at or past its soft time limit of 0.1 s; pass --add-time to resume\n"
+    )
+    assert read_state() == before
+    assert not LOCK_FILE.exists()
+
+
+def test_resume_with_a_grant_that_stays_under_the_spent_time_is_refused(
+    dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    write(project, "soft", SOFT)
+    assert main(["run", "soft", "input"]) == 5
+    before = read_state()
+    capsys.readouterr()
+    assert main(["resume", "--add-time", "0.05"]) == 1
+    assert "soft time limit of 0.15 s" in capsys.readouterr().err
+    assert read_state() == before
+
+
+def test_budget_stop_resume_with_a_grant_enters_the_node_as_a_grace_entry(
+    dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    write(project, "soft", SOFT)
+    assert main(["run", "soft", "input"]) == 5
+    capsys.readouterr()
+    assert main(["resume", "--add-time", "0.25"]) == 5
+    assert capsys.readouterr().out == "wait: pass\nwait: budget\n"
+    assert read_state()["visits"] == {"wait": 1}
+    assert spent_time() == pytest.approx(0.5, abs=0.1)
+
+
+def test_budget_stop_keeps_the_pending_handoff_for_the_resume(
+    dirs: tuple[Path, Path], fake_claude: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    write(project, "soft", SOFT_HANDOFF)
+    write_agent(project, "planner", PLANNER)
+    write_agent(project, "builder", "You are the builder.")
+    respond(project, outcome_response("done", handoff="Split the work in two."))
+    assert main(["run", "soft", "issue #9"]) == 5
+    assert capsys.readouterr().out == "plan: done\nwait: pass\nbuild: budget\n"
+    assert read_state()["handoff"] == ["plan", "Split the work in two."]
+    respond(project, outcome_response("done"))
+    assert main(["resume", "--add-time", "1s"]) == 0
+    assert capsys.readouterr().out == "build: done\n"
+    prompts = [flag_value(args, "-p") for args in spawn_args(project)]
+    assert prompts == ["issue #9", "issue #9\n\nHandoff from plan:\nSplit the work in two."]
+    assert read_state()["node"] == "END"
+
+
+def test_time_stopped_does_not_count_as_spent(
+    dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    write(project, "soft", SOFT.replace('command = "sleep 0.2"', 'command = "true"'))
+    assert main(["run", "soft", "input"]) == 0
+    STATE_FILE.write_text(json.dumps({**read_state(), "node": "wait", "stopped": "budget"}))
+    time.sleep(0.3)
+    assert main(["resume"]) == 0
+    assert spent_time() < 0.2
+
+
+def test_hard_limit_cuts_the_node_run_as_a_failure(
+    dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    write(project, "hard", HARD)
+    assert main(["run", "hard", "input"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == "wait: failure\n"
+    assert captured.err == "node 'wait': hard time limit of 0.3 s reached\n"
+    assert read_state() == {
+        "workflow": "hard",
+        "input": "input",
+        "node": "wait",
+        "visits": {"wait": 1},
+        "spent_time": pytest.approx(0.4, abs=0.1),
+        "stopped": "failure",
+        "reason": "node 'wait': hard time limit of 0.3 s reached",
+    }
+    assert not LOCK_FILE.exists()
+
+
+def test_hard_cut_resume_without_a_grant_is_refused(
+    dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    write(project, "hard", HARD)
+    assert main(["run", "hard", "input"]) == 2
+    before = read_state()
+    capsys.readouterr()
+    assert main(["resume"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert (
+        captured.err
+        == "the run is at or past its hard time limit of 0.3 s; pass --add-time to resume\n"
+    )
+    assert read_state() == before
+
+
+def test_hard_cut_resume_with_a_grant_is_a_grace_entry(
+    dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    write(project, "hard", HARD)
+    assert main(["run", "hard", "input"]) == 2
+    capsys.readouterr()
+    assert main(["resume", "--add-time", "1s"]) == 0
+    assert capsys.readouterr().out == "wait: pass\n"
+    assert read_state()["visits"] == {"wait": 1}
+
+
+def test_map_run_counts_the_wall_clock_of_the_fan_out(dirs: tuple[Path, Path]) -> None:
+    project, _ = dirs
+    write(project, "sleeps", PARALLEL_SLEEPS)
+    assert main(["run", "sleeps", "input"]) == 0
+    assert 0.3 <= spent_time() < 0.5
+
+
+def test_map_child_cut_by_the_hard_limit_fails_and_the_run_stops_before_the_next_node(
+    dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    write(
+        project,
+        "sleeps",
+        PARALLEL_SLEEPS.replace(
+            'start = "checks"', 'start = "checks"\n\n[budget]\ntime_hard = 0.5'
+        ).replace('command = "sleep 0.3"', 'command = "sleep 5"', 1),
+    )
+    assert main(["run", "sleeps", "input"]) == 5
+    captured = capsys.readouterr()
+    assert sorted(captured.out.splitlines()) == [
+        "checks/slow: fail",
+        "checks/slower: pass",
+        "checks: budget",
+        "checks: fail",
+    ]
+    assert captured.err == "node 'checks': hard time limit of 0.5 s reached\n"
+    assert read_state()["stopped"] == "budget"
+    assert spent_time() == pytest.approx(0.6, abs=0.1)
+
+
+def test_grants_accumulate_across_resumes(
+    dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    write(project, "soft", SOFT.replace("visits = 3", "visits = 5"))
+    assert main(["run", "soft", "input"]) == 5
+    assert main(["resume", "--add-time", "0.3"]) == 5
+    assert main(["resume", "--add-time", "0.3"]) == 5
+    capsys.readouterr()
+    assert read_state()["added_time"] == pytest.approx(0.6)
+    assert main(["status"]) == 0
+    assert capsys.readouterr().out == (
+        "stopped at 'wait': budget\nnode 'wait': soft time limit of 0.7 s reached\n"
+        "spent time: 1 s\nsoft limit: 0.7 s\n"
+    )
+
+
+def test_grant_lets_a_budget_stopped_run_pass_the_old_limit(
+    dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    write(project, "soft", SOFT)
+    assert main(["run", "soft", "input"]) == 5
+    capsys.readouterr()
+    assert main(["resume", "--add-time", "1s"]) == 0
+    assert capsys.readouterr().out == "wait: pass\nwait: pass\nwait: pass\n"
+    assert read_state()["visits"] == {"wait": 3}
+    assert spent_time() == pytest.approx(0.9, abs=0.15)
+
+
+def test_grant_raises_only_the_declared_limits(
+    dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    write(project, "hard", HARD)
+    assert main(["run", "hard", "input"]) == 2
+    STATE_FILE.write_text(json.dumps({**read_state(), "added_time": 100}))
+    capsys.readouterr()
+    assert main(["status"]) == 0
+    assert capsys.readouterr().out.endswith("spent time: 0 s\nhard limit: 100.3 s\n")
+
+
+def test_grant_without_a_declared_time_limit_refuses_the_resume(
+    dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    write(project, "broken", BROKEN)
+    assert main(["run", "broken", "input"]) == 2
+    before = read_state()
+    capsys.readouterr()
+    assert main(["resume", "--add-time", "5m"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "the workflow declares no time limit; drop --add-time\n"
+    assert read_state() == before
+    assert not LOCK_FILE.exists()
+
+
+def test_unparsable_grant_is_a_usage_error(
+    dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    write(project, "soft", SOFT)
+    assert main(["run", "soft", "input"]) == 5
+    capsys.readouterr()
+    with pytest.raises(SystemExit) as excinfo:
+        main(["resume", "--add-time", "5x"])
+    assert excinfo.value.code == 2
+    assert "invalid duration '5x'" in capsys.readouterr().err
+    assert read_state()["visits"] == {"wait": 1}
+
+
+def test_status_reports_a_budget_stop_with_the_effective_limits(
+    dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    write(project, "soft", SOFT.replace("time_soft = 0.1", 'time_soft = 0.1\ntime_hard = "1h"'))
+    assert main(["run", "soft", "input"]) == 5
+    capsys.readouterr()
+    assert main(["status"]) == 0
+    assert capsys.readouterr().out == (
+        "stopped at 'wait': budget\nnode 'wait': soft time limit of 0.1 s reached\n"
+        "spent time: 0 s\nsoft limit: 0.1 s\nhard limit: 3600 s\n"
+    )

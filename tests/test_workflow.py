@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from tests.conftest import MINIMAL, write
-from workgraph.workflow import WorkflowError, load_workflow, to_mermaid
+from workgraph.workflow import WorkflowError, load_workflow, parse_duration, to_mermaid
 
 VALID = """
 start = "implement"
@@ -196,7 +196,78 @@ def test_bundled_dev_workflow_declares_the_review_fan_out(
     assert workflow["nodes"]["test"]["limits"] == {"visits": 5, "reset": "pass"}
 
 
+BUDGETED = (
+    MINIMAL
+    + """
+[budget]
+time_soft = "30m"
+time_hard = 2700
+"""
+)
+
+
+def test_budget_limits_load_as_seconds(dirs: tuple[Path, Path]) -> None:
+    project, _ = dirs
+    write(project, "budgeted", BUDGETED)
+    assert load_workflow("budgeted")["budget"] == {"time_soft": 1800.0, "time_hard": 2700.0}
+
+
+def test_one_budget_limit_loads_alone(dirs: tuple[Path, Path]) -> None:
+    project, _ = dirs
+    write(project, "budgeted", MINIMAL + '\n[budget]\ntime_hard = "1h"\n')
+    assert load_workflow("budgeted")["budget"] == {"time_hard": 3600.0}
+
+
+@pytest.mark.parametrize(
+    ("value", "seconds"),
+    [(90, 90.0), (1.5, 1.5), ("90", 90.0), ("90s", 90.0), ("1.5m", 90.0), ("2h", 7200.0)],
+)
+def test_parse_duration_accepts_seconds_and_units(value: object, seconds: float) -> None:
+    assert parse_duration(value) == seconds
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        ("30x", "expected seconds or a number with unit s, m, or h"),
+        ("", "expected seconds"),
+        ("-5", "expected seconds"),
+        ("m", "expected seconds"),
+        (True, "expected seconds"),
+        (None, "expected seconds"),
+        (0, "must be positive"),
+        ("0s", "must be positive"),
+        (-1, "must be positive"),
+    ],
+)
+def test_parse_duration_rejects_other_input(value: object, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        parse_duration(value)
+
+
 BAD = [
+    pytest.param(
+        BUDGETED.replace("time_hard = 2700", "time_hard = 1700"),
+        "[budget]: time_hard is below time_soft",
+        id="hard-below-soft",
+    ),
+    pytest.param(
+        BUDGETED.replace("time_hard = 2700", "time_hard = 0"),
+        "[budget]: time_hard: invalid duration 0: must be positive",
+        id="non-positive-limit",
+    ),
+    pytest.param(
+        BUDGETED.replace('time_soft = "30m"', 'time_soft = "30x"'),
+        "[budget]: time_soft: invalid duration '30x': expected seconds",
+        id="unparsable-limit",
+    ),
+    pytest.param(
+        BUDGETED.replace('time_soft = "30m"', "time_soft = true"),
+        "[budget]: time_soft: invalid duration True",
+        id="boolean-limit",
+    ),
+    pytest.param(BUDGETED + "cost = 5\n", "[budget]: unknown key 'cost'", id="unknown-budget-key"),
+    pytest.param("budget = 5\n" + MINIMAL, "[budget] must be a table", id="budget-not-a-table"),
     pytest.param(MINIMAL.replace('start = "check"', "start ="), "invalid TOML", id="invalid-toml"),
     pytest.param(
         MINIMAL.replace('start = "check"', ""), "missing top-level 'start'", id="missing-start"
