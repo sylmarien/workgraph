@@ -6,10 +6,12 @@ The workflow gets a `ship` gate before `pr` so a park can be shown.
   A  chain of node runs in journal order (the #54 diamonds), wrapped to the terminal width
   B  the `viz` graph with the path marked (termaid)
   C  B plus one path line in journal order
+  D  A vertical: progress downward, fan-outs rightward
+  E  B plus D
 
 Run from the repo root:
 
-  uv run python src/workgraph/prototype_path.py -v A|B|C -s fanout|limit|parked|running|ended [--follow] [--ascii]
+  uv run python src/workgraph/prototype_path.py -v A|B|C|D|E -s fanout|limit|parked|running|ended [--follow] [--ascii]
 """
 
 import argparse
@@ -244,6 +246,45 @@ def chain(steps: list[tuple[str, Any]], now: datetime, width: int) -> str:
     return "\n".join("".join(row).rstrip() for row in canvas)
 
 
+# --- variant D: vertical chain ---------------------------------------------
+
+
+def vchain(steps: list[tuple[str, Any]], now: datetime) -> str:
+    names = max((len(nr["name"]) for k, nr in steps if k == "run"), default=0)
+
+    def node_line(nr: dict[str, Any], pad: int = 0) -> str:
+        return f"{glyph(nr)} {nr['name'].ljust(pad)}  {dur(nr, now)}"
+
+    rows: list[tuple[str, str]] = []
+    for i, (kind, s) in enumerate(steps):
+        if kind == "run":
+            left = [node_line(s, names)] + ([f"│ {s['outcome']}"] if s["end"] else [])
+            right = []
+            n = len(s["children"])
+            for j, c in enumerate(s["children"]):
+                conn = ("─" if n == 1 else "┬") if j == 0 else "└" if j == n - 1 else "├"
+                right.append(f"{conn} {node_line(c)}  {c['outcome'] or ''}".rstrip())
+            while len(left) < len(right):
+                left.append("│" if s["end"] else "")
+            rows += [(left[k], right[k] if k < len(right) else "") for k in range(len(left))]
+        elif kind == "limit":
+            rows.append((f"┆ {s['node']} → LIMIT", ""))
+        elif kind == "stop" and s["reason"] == "gate":
+            resumed = i + 1 < len(steps) and steps[i + 1][0] == "resume"
+            waited = (parse(steps[i + 1][1]["time"]) if resumed else now) - parse(s["time"])
+            rows.append((f"⬡ {s['node'].ljust(names)}  {'' if resumed else 'parked '}{fmt(waited.total_seconds())}", ""))
+        elif kind == "stop":
+            rows.append((END if s["reason"] == "end" else f"✗ {s['reason']}", ""))
+        elif kind == "resume":
+            rows.append((f"│ {s['decision']}", ""))
+    width = max(len(left) for left, _ in rows) + 1
+    out = []
+    for left, right in rows:
+        fill = "─" if right[:1] in ("─", "┬") else " "
+        out.append(((left + " ").ljust(width, fill) + right).rstrip())
+    return "\n".join(out)
+
+
 # --- variant B: graph ------------------------------------------------------
 
 
@@ -337,18 +378,23 @@ def render(wf: dict[str, Any], events: list[dict[str, Any]], now: datetime, vari
     steps = model(events)
     if variant == "A":
         console.print(chain(steps, now, console.width), highlight=False, markup=False)
+    elif variant == "D":
+        console.print(vchain(steps, now), highlight=False, markup=False)
     else:
         console.print(render_rich(mermaid(wf, steps, now), use_ascii=use_ascii, padding_y=0, padding_x=4), soft_wrap=True)
         if variant == "C":
             console.print()
             console.print(path_line(steps, now, console.width), highlight=False, markup=False)
+        elif variant == "E":
+            console.print()
+            console.print(vchain(steps, now), highlight=False, markup=False)
     console.print()
     console.print(f"run: dev \"#62\" · {status(wf, steps, now)}", highlight=False, markup=False)
 
 
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("-v", "--variant", choices="ABC", default="B")
+    p.add_argument("-v", "--variant", choices="ABCDE", default="B")
     p.add_argument("-s", "--scenario", choices=[*CUTS, "ended"], default="running")
     p.add_argument("--follow", action="store_true", help="replay the journal, redrawing on every event")
     p.add_argument("--ascii", action="store_true")
