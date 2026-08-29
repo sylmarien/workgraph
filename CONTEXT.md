@@ -100,6 +100,18 @@ _Avoid_: Timeout, kill limit
 The sum of the wall-clock durations of a run's node runs, carried across resumes. A map node's run counts once, as the wall-clock of the fan-out. Time while the run is stopped does not count.
 _Avoid_: Elapsed time, runtime, duration
 
+**Cost budget**:
+The USD bound a workflow declares for a run, measured against spent cost. A run at or past the bound stops before entering its next node; the node run in progress finishes.
+_Avoid_: Usage budget, money budget, spend limit
+
+**Spent cost**:
+The sum of the USD costs the harness reports for a run's agent node runs, carried across resumes. A command node adds nothing.
+_Avoid_: Usage, spend, burn
+
+**Grant**:
+An amount a human adds to a budget when resuming a run. A grant raises every declared limit of its budget kind and accumulates across resumes; it never creates a limit the workflow did not declare.
+_Avoid_: Top-up, extension
+
 **Budget stop**:
-Stopping a run because its spent time reached a limit of its time budget.
+Stopping a run because a spent amount reached a limit of its budget: spent time against the time budget, or spent cost against the cost budget.
 _Avoid_: Timeout, abort
