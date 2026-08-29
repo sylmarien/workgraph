@@ -1,5 +1,7 @@
 """Workflow discovery, loading, validation, and mermaid rendering."""
 
+import math
+import re
 import tomllib
 from pathlib import Path
 from typing import Any, NoReturn
@@ -9,6 +11,9 @@ LIMIT = "LIMIT"
 RESERVED_NAMES = frozenset({END, LIMIT})
 SETTINGS = ("harness", "model", "effort")
 KINDS = ("agent", "command", "map", "gate")
+BUDGET_KEYS = ("time_soft", "time_hard")
+DURATION = re.compile(r"(\d+(?:\.\d+)?)([smh]?)")
+UNITS = {"": 1, "s": 1, "m": 60, "h": 3600}
 
 
 class WorkflowError(Exception):
@@ -24,7 +29,27 @@ def load_workflow(name: str) -> dict[str, Any]:
         except tomllib.TOMLDecodeError as error:
             raise WorkflowError(f"{name}: invalid TOML: {error}") from error
     _validate(name, data)
+    if "budget" in data:
+        data["budget"] = _validate_budget(name, data["budget"])
     return data
+
+
+def parse_duration(value: object) -> float:
+    """Return the seconds a duration denotes: a positive number, or a string with unit s, m, or h.
+
+    parse_duration raises ValueError for any other input.
+    """
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        seconds = float(value)
+    elif isinstance(value, str) and (match := DURATION.fullmatch(value)):
+        seconds = float(match[1]) * UNITS[match[2]]
+    else:
+        raise ValueError(
+            f"invalid duration {value!r}: expected seconds or a number with unit s, m, or h"
+        )
+    if seconds <= 0:
+        raise ValueError(f"invalid duration {value!r}: must be positive")
+    return seconds
 
 
 def to_mermaid(workflow: dict[str, Any]) -> str:
@@ -71,6 +96,23 @@ def _validate(workflow_name: str, data: dict[str, Any]) -> None:
     defaults = data.get("defaults", {})
     for name, node in nodes.items():
         _validate_node(workflow_name, nodes, defaults, mapped, name, node)
+
+
+def _validate_budget(workflow_name: str, budget: dict[str, Any]) -> dict[str, float]:
+    """Check the budget keys and return the limits in seconds."""
+    if not isinstance(budget, dict):
+        raise WorkflowError(f"{workflow_name}: [budget] must be a table")
+    limits: dict[str, float] = {}
+    for key, value in budget.items():
+        if key not in BUDGET_KEYS:
+            raise WorkflowError(f"{workflow_name}: [budget]: unknown key '{key}'")
+        try:
+            limits[key] = parse_duration(value)
+        except ValueError as error:
+            raise WorkflowError(f"{workflow_name}: [budget]: {key}: {error}") from error
+    if limits.get("time_hard", math.inf) < limits.get("time_soft", 0):
+        raise WorkflowError(f"{workflow_name}: [budget]: time_hard is below time_soft")
+    return limits
 
 
 def _collect_mapped(workflow_name: str, nodes: dict[str, Any]) -> dict[str, str]:
