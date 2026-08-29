@@ -19,6 +19,7 @@ from workgraph.run import (
     NothingToResume,
     Park,
     RunInProgress,
+    cost_limit,
     load_state,
     park_report,
     read_state,
@@ -26,7 +27,14 @@ from workgraph.run import (
     run_workflow,
     time_limits,
 )
-from workgraph.workflow import END, WorkflowError, load_workflow, parse_duration, to_mermaid
+from workgraph.workflow import (
+    END,
+    WorkflowError,
+    load_workflow,
+    parse_cost,
+    parse_duration,
+    to_mermaid,
+)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -77,6 +85,7 @@ def _add_resume_parser(subparsers: "argparse._SubParsersAction[argparse.Argument
         type=_duration,
         help="Grant the run more time: seconds, or a number with unit s, m, or h.",
     )
+    resume.add_argument("--add-cost", type=_cost, help="Grant the run more cost, in USD.")
 
 
 def _add_run_parser(subparsers: "argparse._SubParsersAction[argparse.ArgumentParser]") -> None:
@@ -133,6 +142,13 @@ def _duration(value: str) -> float:
         raise argparse.ArgumentTypeError(error) from error
 
 
+def _cost(value: str) -> float:
+    try:
+        return parse_cost(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(error) from error
+
+
 def _run(args: argparse.Namespace) -> int:
     def action() -> None:
         run_workflow(args.workflow, load_workflow(args.workflow), args.input, args.directory)
@@ -150,6 +166,7 @@ def _resume(args: argparse.Namespace) -> int:
             args.decision,
             args.feedback,
             args.add_time,
+            args.add_cost,
         )
 
     return _report(action)
@@ -176,6 +193,10 @@ def _status(args: argparse.Namespace) -> int:
             print(f"spent time: {state.get('spent_time', 0):.0f} s")
             for kind, limit in time_limits(workflow, state).items():
                 print(f"{kind} limit: {limit:g} s")
+            cost = cost_limit(workflow, state)
+            if cost is not None:
+                print(f"spent cost: {state.get('spent_cost', 0):.2f} USD")
+                print(f"cost limit: {cost:g} USD")
 
     return _report(action)
 

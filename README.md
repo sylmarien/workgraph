@@ -55,14 +55,16 @@ Requires Python 3.12+. Agent nodes additionally require the `claude` CLI on
   node where it stopped. `--decision accept|reject` delivers a decision to a
   parked run. `reject` requires `--feedback "<text>"`; `accept` does not
   take it. `--add-time <duration>` grants the run more time (see
-  [Time budget](#time-budget)).
+  [Time budget](#time-budget)); `--add-cost <usd>` grants it more cost (see
+  [Cost budget](#cost-budget)).
 - `workgraph status` — report the run in the current directory. The first
   line is `no run in <dir>` (exit 1), `a run is in progress at node '<node>'`,
   `the run reached END`, or `stopped at '<node>': <gate|failure|limit|budget>`.
   A stopped run then prints the stop message when the run recorded one, the
-  gate question and the review material for a parked run, the spent time, and
-  each effective limit of the time budget. A run interrupted between node
-  runs reports `interrupted` in place of the stop.
+  gate question and the review material for a parked run, the spent time and
+  each effective time limit, and the spent cost and the effective cost limit
+  when the workflow declares one. A run interrupted between node runs
+  reports `interrupted` in place of the stop.
 - `workgraph viz <workflow>` — print the workflow graph. `--unicode`
   (default), `--ascii`, or `--mermaid` for the mermaid source. The unicode and
   ascii styles widen the diagram to the terminal width. `--theme <name>` picks
@@ -96,8 +98,9 @@ Exit codes:
 - `3` — escalation: a node hit its visit limit and has no `LIMIT` transition.
 - `4` — park: a gate node waits for a decision. The output is the progress
   line `<gate>: parked`, the gate question, then the review material.
-- `5` — budget stop: the spent time reached a limit of the time budget. The
-  output is the progress line `<node>: budget`; the error names the limit.
+- `5` — budget stop: the spent time or the spent cost reached a limit of a
+  budget. The output is the progress line `<node>: budget`; the error names
+  the limit.
 
 `workgraph resume` restarts a stopped run; a run that reached `END` cannot
 be resumed. What the resume does depends on the stop:
@@ -108,8 +111,9 @@ be resumed. What the resume does depends on the stop:
   follows the matching transition without re-running the gate.
 
 The first entry of every resume is a grace entry: it does not count toward
-the visit limit. A run at or past a limit of its time budget resumes only
-with `--add-time`; otherwise `resume` refuses (exit 1) and changes nothing.
+the visit limit. A run at or past a limit of a budget resumes only with a
+grant (`--add-time`, `--add-cost`); otherwise `resume` refuses (exit 1) and
+changes nothing.
 
 ## Workflow files
 
@@ -179,8 +183,8 @@ time_hard = 2700             # hard limit: interrupt the node run in progress
 - A duration is a bare number of seconds, or a string of a number with the
   unit `s`, `m`, or `h`: `90`, `"90s"`, `"1.5m"`, `"2h"`. It must be positive.
   The same grammar applies to `--add-time`.
-- Either key may be absent. `time_hard` must not be below `time_soft`. No
-  other key is accepted in `[budget]`.
+- Either key may be absent. `time_hard` must not be below `time_soft`. The
+  only other key accepted in `[budget]` is `cost`.
 - Spent time is the sum of the wall-clock durations of the run's node runs,
   carried across resumes. A map node's run counts once, as the wall-clock of
   the fan-out. Time while the run is stopped does not count. The run state
@@ -205,6 +209,38 @@ time_hard = 2700             # hard limit: interrupt the node run in progress
   spent time is still at or past a limit after the grant. Editing the
   workflow file is the other way to raise the budget: `run` and `resume`
   read it on each call.
+
+### Cost budget
+
+A workflow may bound the USD a run spends in agent node runs:
+
+```toml
+[budget]
+cost = 5.0                   # stop before the next node once 5 USD are spent
+```
+
+- `cost` is a positive number of USD. It may appear with or without the time
+  keys.
+- Spent cost is the sum of the `total_cost_usd` values the harness reports
+  for the run's agent node runs, fanned-out nodes included, carried across
+  resumes. A command node adds nothing; a result without the field, or with
+  a non-numeric one, adds nothing; a failed agent run adds the cost it
+  reported. The run state
+  stores it as `spent_cost`.
+- The harness computes `total_cost_usd` at list API prices. API-key users
+  pay that amount; subscription users see an accounting figure.
+- Before entering a node, when the spent cost is at or past the limit, the
+  run stops with exit 5 and `stopped = "budget"`, like a soft time limit.
+  The node run in progress always finishes; there is no mid-node cost check.
+  A map fan-out can therefore overshoot the limit by the cost of its
+  fanned-out nodes.
+- A node run that never ends has no cost bound: declare `time_hard` with
+  `cost`; the hard limit stops such a node run.
+- `workgraph resume --add-cost <usd>` grants the run more cost. A grant
+  raises the limit, accumulates across resumes, and is stored in the run
+  state as `added_cost`. `resume` refuses, and records nothing, when the
+  workflow declares no `cost` and `--add-cost` is passed, or when the spent
+  cost is still at or past the limit after the grant.
 
 Rules, all validated at load time:
 
