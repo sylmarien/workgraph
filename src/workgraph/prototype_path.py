@@ -11,7 +11,7 @@ The workflow gets a `ship` gate before `pr` so a park can be shown.
 
 Run from the repo root:
 
-  uv run python src/workgraph/prototype_path.py -v A|B|C|D|E -s fanout|limit|parked|running|ended [--follow] [--ascii] [--rich]
+  uv run python src/workgraph/prototype_path.py -v A|B|C|D|E -s fanout|limit|parked|running|rejected|escalated|failed|ended [--follow] [--ascii] [--rich]
 """
 
 import argparse
@@ -57,6 +57,19 @@ CUTS = {
     "limit": ("start", "summary#1"),
     "parked": ("stop", "ship"),
     "running": ("start", "pr#1"),
+}
+
+# Scenarios the main journal does not reach: a cut plus appended events.
+EXTRA = {
+    "rejected": (("stop", "ship"), [
+        {"event": "resume", "decision": "reject", "feedback": "not yet"},
+        {"event": "start", "node": "implement#6", "handoff": None, "map": None},
+    ]),
+    "escalated": (("end", "test#5"), [{"event": "stop", "reason": "escalation", "node": "review"}]),
+    "failed": (("start", "implement#3"), [
+        {"event": "end", "node": "implement#3", "outcome": None, "failure": "claude exited with code 1", "handoff": None, "target": None, "map": None},
+        {"event": "stop", "reason": "failure", "node": "implement"},
+    ]),
 }
 
 
@@ -121,10 +134,12 @@ def build_journal(wf: dict[str, Any]) -> list[dict[str, Any]]:
 def cut(events: list[dict[str, Any]], scenario: str) -> list[dict[str, Any]]:
     if scenario == "ended":
         return events
-    kind, node = CUTS[scenario]
+    (kind, node), tail = EXTRA.get(scenario, (CUTS.get(scenario), []))
     for i, e in enumerate(events):
         if e["event"] == kind and e.get("node") == node:
-            return events[: i + 1]
+            base = events[: i + 1]
+            t = parse(base[-1]["time"])
+            return base + [dict(x, time=iso(t + timedelta(seconds=5 * (k + 1)))) for k, x in enumerate(tail)]
     raise SystemExit(f"no cut for {scenario}")
 
 
@@ -150,7 +165,7 @@ def model(events: list[dict[str, Any]]) -> list[tuple[str, Any]]:
                 open_[nr["node"]] = nr
             case "end":
                 nr = open_.pop(node_of(e["node"]))
-                nr.update(end=parse(e["time"]), outcome=e["outcome"] or "failure", target=e["target"])
+                nr.update(end=parse(e["time"]), outcome=e["outcome"] or "failure", failure=e.get("failure"), target=e["target"])
             case "limit" | "stop" | "resume":
                 steps.append((e["event"], e))
     return steps
@@ -187,7 +202,7 @@ def status(wf: dict[str, Any], steps: list[tuple[str, Any]], now: datetime) -> s
     if kind == "stop":
         if s["reason"] == "gate":
             return f"parked at {s['node']} for {fmt((now - parse(s['time'])).total_seconds())}: {wf['nodes'][s['node']]['gate']}"
-        return f"stopped: {s['reason']}"
+        return f"stopped: {s['reason']}" + ("" if s["reason"] == "end" else f" at {s['node']}")
     live = [nr for k, nr in steps if k == "run" and running(nr)]
     names = ", ".join(f"{nr['name']} {dur(nr, now)}" for nr in live) or "between nodes"
     return f"running {names}"
@@ -249,47 +264,56 @@ def chain(steps: list[tuple[str, Any]], now: datetime, width: int) -> str:
 
 # --- variant D: vertical chain ---------------------------------------------
 
-# Glyph sets: plain unicode, or Nerd Font (--rich).
+# Glyph sets: plain unicode, or Nerd Font (--rich). "pulse" is the hollow current glyph.
 GLYPHS = {
-    "plain": {"past": "◇", "current": "◆", "failure": "✗", "limit": "┆", "gate": "⬡", "parked": "⬡", "end": "END", "stop": "✗"},
-    "nerd": {"past": "\uf058", "current": "\uf144", "failure": "\uf057", "limit": "\uf071", "gate": "\uf007", "parked": "\uf28b", "end": "\uf11e END", "stop": "\uf057"},
+    "plain": {"past": "◇", "current": "◆", "pulse": "◇", "failure": "✗", "limit": "┆", "warn": "⚠", "gate": "⬡", "end": "END"},
+    "nerd": {"past": "\uf058", "current": "\uf144", "pulse": "\uf01d", "failure": "\uf057", "limit": "\uf071", "warn": "\uf071", "gate": "\uf007", "end": "\uf11e END"},
 }
 
-
-def outcome_style(outcome: str | None) -> str:
-    return "red" if outcome in ("fail", "reject", "failure") else "green"
+DECISION = {"accept": "green", "reject": "red"}
 
 
-def vchain(steps: list[tuple[str, Any]], now: datetime, g: dict[str, str]) -> Text:
+def vchain(wf: dict[str, Any], steps: list[tuple[str, Any]], now: datetime, g: dict[str, str], pulse: bool = False) -> Text:
+    nodes = wf["nodes"]
     names = max((len(nr["name"]) for k, nr in steps if k == "run"), default=0)
+
+    def style_of(nr: dict[str, Any]) -> str:
+        """Only coded outcomes get a color: command and map pass/fail, and a failure."""
+        if nr["outcome"] == "failure":
+            return "red"
+        node = nodes[nr["node"]]
+        if "command" in node or "map" in node:
+            return "green" if nr["outcome"] == "pass" else "red"
+        return ""
 
     def node_line(nr: dict[str, Any], pad: int = 0) -> Text:
         t = Text()
         if running(nr):
-            t.append(g["current"] + " ", "bold green")
-            t.append(nr["name"].ljust(pad), "bold")
-            t.append("  " + dur(nr, now), "bold green")
+            t.append(f"{g['pulse'] if pulse else g['current']} {nr['name'].ljust(pad)}  {dur(nr, now)}", "bold")
         else:
-            failed = nr["outcome"] == "failure"
-            t.append((g["failure"] if failed else g["past"]) + " ", outcome_style(nr["outcome"]))
-            t.append(nr["name"].ljust(pad))
+            glyph = g["failure"] if nr["outcome"] == "failure" else g["past"]
+            t.append(f"{glyph} {nr['name'].ljust(pad)}", style_of(nr))
             t.append("  " + dur(nr, now), "dim")
         return t
 
-    def edge(label: str) -> Text:
-        return Text().append("│ ", "dim").append(label, outcome_style(label))
+    def edge(label: str, style: str = "") -> Text:
+        return Text().append("│ ", "dim").append(label, style)
 
     rows: list[tuple[Text, Text]] = []
+    failure = None
     for i, (kind, s) in enumerate(steps):
         if kind == "run":
-            left = [node_line(s, names)] + ([edge(s["outcome"])] if s["end"] else [])
+            failure = s.get("failure") or failure
+            left = [node_line(s, names)]
+            if s["end"] and s["outcome"] != "failure":
+                left.append(edge(s["outcome"], style_of(s)))
             right = []
             n = len(s["children"])
             for j, c in enumerate(s["children"]):
                 conn = ("─" if n == 1 else "┬") if j == 0 else "└" if j == n - 1 else "├"
                 line = Text().append(conn + " ", "dim").append_text(node_line(c))
                 if c["outcome"]:
-                    line.append("  " + c["outcome"], outcome_style(c["outcome"]))
+                    line.append("  " + c["outcome"], style_of(c))
                 right.append(line)
             while len(left) < len(right):
                 left.append(Text().append("│", "dim") if s["end"] else Text())
@@ -299,15 +323,23 @@ def vchain(steps: list[tuple[str, Any]], now: datetime, g: dict[str, str]) -> Te
         elif kind == "stop" and s["reason"] == "gate":
             resumed = i + 1 < len(steps) and steps[i + 1][0] == "resume"
             waited = (parse(steps[i + 1][1]["time"]) if resumed else now) - parse(s["time"])
-            t = Text().append(f"{g['gate'] if resumed else g['parked']} ", "yellow" if resumed else "bold yellow")
-            t.append(s["node"].ljust(names), "" if resumed else "bold")
-            t.append(f"  {'' if resumed else 'parked '}{fmt(waited.total_seconds())}", "dim" if resumed else "bold yellow")
+            t = Text()
+            if resumed:
+                t.append(f"{g['gate']} {s['node'].ljust(names)}", DECISION[steps[i + 1][1]["decision"]])
+                t.append(f"  {fmt(waited.total_seconds())}", "dim")
+            else:
+                t.append(f"{g['gate']} {s['node'].ljust(names)}  parked {fmt(waited.total_seconds())}", "bold yellow")
             rows.append((t, Text()))
+        elif kind == "stop" and s["reason"] == "end":
+            rows.append((Text(g["end"], "green"), Text()))
+        elif kind == "stop" and s["reason"] == "failure":
+            rows.append((Text(f"{g['failure']} failure: {failure}", "red"), Text()))
         elif kind == "stop":
-            rows.append((Text(g["end"], "bold green") if s["reason"] == "end" else Text(f"{g['stop']} {s['reason']}", "bold red"), Text()))
+            rows.append((Text(f"{g['warn']} {s['reason']} at {s['node']}", "bold yellow"), Text()))
         elif kind == "resume":
-            rows.append((edge(s["decision"]), Text()))
-    width = max(left.cell_len for left, _ in rows) + 1
+            rows.append((edge(s["decision"], DECISION[s["decision"]]) if s["decision"] else edge("resumed", "dim"), Text()))
+    # Stop rows carry no right part, so they may run past the column.
+    width = max(left.cell_len for left, _ in rows if left.plain[:1] not in (g["warn"][:1], g["failure"][:1])) + 1
     lines = []
     for left, right in rows:
         line = left.copy()
@@ -410,12 +442,12 @@ def path_line(steps: list[tuple[str, Any]], now: datetime, width: int) -> str:
 # --- driver ----------------------------------------------------------------
 
 
-def render(wf: dict[str, Any], events: list[dict[str, Any]], now: datetime, variant: str, use_ascii: bool, console: Console, g: dict[str, str] = GLYPHS["plain"]) -> None:
+def render(wf: dict[str, Any], events: list[dict[str, Any]], now: datetime, variant: str, use_ascii: bool, console: Console, g: dict[str, str] = GLYPHS["plain"], pulse: bool = False) -> None:
     steps = model(events)
     if variant == "A":
         console.print(chain(steps, now, console.width), highlight=False, markup=False)
     elif variant == "D":
-        console.print(vchain(steps, now, g))
+        console.print(vchain(wf, steps, now, g, pulse))
     else:
         console.print(render_rich(mermaid(wf, steps, now), use_ascii=use_ascii, padding_y=0, padding_x=4), soft_wrap=True)
         if variant == "C":
@@ -423,17 +455,17 @@ def render(wf: dict[str, Any], events: list[dict[str, Any]], now: datetime, vari
             console.print(path_line(steps, now, console.width), highlight=False, markup=False)
         elif variant == "E":
             console.print()
-            console.print(vchain(steps, now, g))
+            console.print(vchain(wf, steps, now, g, pulse))
     console.print()
     line = status(wf, steps, now)
-    style = "yellow" if line.startswith("parked") else "green" if line in ("stopped: end",) or line.startswith("running") else "red"
-    console.print(Text('run: dev "#62" · ') + Text(line, style))
+    style = {"p": "bold yellow", "r": "bold"}.get(line[0], "green" if line == "stopped: end" else "red" if "failure" in line else "bold yellow")
+    console.print(Text('run: dev "#62" · ').append(line, style))
 
 
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("-v", "--variant", choices="ABCDE", default="B")
-    p.add_argument("-s", "--scenario", choices=[*CUTS, "ended"], default="running")
+    p.add_argument("-s", "--scenario", choices=[*CUTS, *EXTRA, "ended"], default="running")
     p.add_argument("--follow", action="store_true", help="replay the journal, redrawing on every event")
     p.add_argument("--ascii", action="store_true")
     p.add_argument("--rich", action="store_true", help="Nerd Font glyphs in D and E")
@@ -452,12 +484,12 @@ def main() -> None:
     for i in range(2, len(events) + 1):
         now = parse(events[i - 1]["time"]) + timedelta(seconds=1)
         sys.stdout.write("\x1b[2J\x1b[H")
-        render(wf, events[:i], now, args.variant, args.ascii, console, g)
+        render(wf, events[:i], now, args.variant, args.ascii, console, g, pulse=i % 2 == 1)
         time.sleep(0.6)
     if events[-1]["event"] != "stop":
         for k in range(8):
             sys.stdout.write("\x1b[2J\x1b[H")
-            render(wf, events, now + timedelta(seconds=0.5 * k + 1), args.variant, args.ascii, console, g)
+            render(wf, events, now + timedelta(seconds=0.5 * k + 1), args.variant, args.ascii, console, g, pulse=k % 2 == 1)
             time.sleep(0.5)
 
 
