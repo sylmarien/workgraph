@@ -322,6 +322,11 @@ BAD = [
         id="end-as-node-name",
     ),
     pytest.param(
+        MINIMAL.replace("nodes.check", 'nodes."check#"').replace('"check"', '"check#"'),
+        "node 'check#': a node name cannot end with '#'",
+        id="hash-at-end-of-node-name",
+    ),
+    pytest.param(
         MINIMAL.replace('command = "true"', 'command = "true"\nagent = "worker"'),
         "node 'check': declare exactly one of 'agent', 'command', 'map', or 'gate'",
         id="agent-and-command",

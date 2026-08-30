@@ -1,41 +1,32 @@
 """Tests for running a workflow."""
 
 import json
-import os
 import time
 from pathlib import Path
 
 import pytest
 
-from tests.conftest import write
+from tests.conftest import (
+    AGENT,
+    BROKEN,
+    COST,
+    LOOP,
+    PLANNER,
+    SOFT,
+    SPENT,
+    SPIN,
+    cost_run,
+    flag_value,
+    outcome_response,
+    read_state,
+    respond,
+    respond_agent,
+    spawn_args,
+    write,
+    write_agent,
+)
 from workgraph.cli import main
 from workgraph.run import LOCK_FILE, STATE_FILE
-
-LOOP = """
-start = "check"
-
-[nodes.check]
-command = "sh -c 'test -f flag || { touch flag; exit 1; }'"
-
-[nodes.check.transitions]
-pass = "END"
-fail = "check"
-"""
-
-SPIN = """
-start = "spin"
-
-[nodes.spin]
-command = "true"
-
-[nodes.spin.limits]
-visits = 2
-
-[nodes.spin.transitions]
-pass = "spin"
-fail = "spin"
-LIMIT = "END"
-"""
 
 RESET = """
 start = "check"
@@ -70,39 +61,13 @@ pass = "second"
 fail = "second"
 
 [nodes.second]
-command = "cp .workgraph/run.json snapshot.json"
+command = "cp .workgraph/run/state.json snapshot.json"
 
 [nodes.second.transitions]
 pass = "END"
 fail = "END"
 """
 
-BROKEN = """
-start = "check"
-
-[nodes.check]
-command = "workgraph-no-such-cmd"
-
-[nodes.check.transitions]
-pass = "END"
-fail = "END"
-"""
-
-AGENT = """
-start = "plan"
-
-[defaults]
-harness = "claude"
-model = "opus"
-effort = "high"
-
-[nodes.plan]
-agent = "planner"
-outcomes = ["done"]
-
-[nodes.plan.transitions]
-done = "END"
-"""
 
 TWO_AGENTS = """
 start = "plan"
@@ -144,7 +109,7 @@ outcomes = ["done"]
 done = "snapshot"
 
 [nodes.snapshot]
-command = "cp .workgraph/run.json snapshot.json"
+command = "cp .workgraph/run/state.json snapshot.json"
 
 [nodes.snapshot.transitions]
 pass = "END"
@@ -181,93 +146,6 @@ outcomes = ["done"]
 done = "END"
 """
 
-PLANNER = """---
-name: planner
-description: Plans the work.
-tools: Read, Grep
-
-model: sonnet
----
-You are the planner."""
-
-FAKE_CLAUDE = """#!/bin/sh
-printf '%s\\0' "$@" '===' >> claude-calls.txt
-agent=
-prev=
-for arg in "$@"; do
-  [ "$prev" = "--agent" ] && agent="$arg"
-  prev="$arg"
-done
-file="responses-$agent"
-[ -f "$file" ] || file="responses"
-IFS= read -r response < "$file"
-sed -i 1d "$file"
-case "$response" in
-  EXIT*) exit "${response#EXIT}" ;;
-  *) printf '%s\\n' "$response" ;;
-esac
-"""
-
-
-@pytest.fixture
-def fake_claude(dirs: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch) -> None:
-    """Put a fake claude on PATH that logs its argv and replays canned responses."""
-    project, _ = dirs
-    bin_dir = project / "bin"
-    bin_dir.mkdir()
-    script = bin_dir / "claude"
-    script.write_text(FAKE_CLAUDE)
-    script.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
-
-
-def write_agent(base: Path, name: str, text: str) -> None:
-    """Write an agent definition into base/.workgraph/agents."""
-    directory = base / ".workgraph" / "agents"
-    directory.mkdir(parents=True, exist_ok=True)
-    (directory / f"{name}.md").write_text(text)
-
-
-def respond(project: Path, *responses: str) -> None:
-    """Queue one fake-claude response per upcoming spawn."""
-    (project / "responses").write_text("\n".join(responses) + "\n")
-
-
-def respond_agent(project: Path, agent: str, *responses: str) -> None:
-    """Queue fake-claude responses for one agent; parallel spawns need per-agent queues."""
-    (project / f"responses-{agent}").write_text("\n".join(responses) + "\n")
-
-
-def outcome_response(outcome: str, handoff: str | None = None, cost: float | None = None) -> str:
-    """Build a fake claude result JSON reporting the outcome, an optional handoff and cost."""
-    output: dict[str, str] = {"outcome": outcome}
-    if handoff is not None:
-        output["handoff"] = handoff
-    result: dict[str, object] = {"is_error": False, "structured_output": output}
-    if cost is not None:
-        result["total_cost_usd"] = cost
-    return json.dumps(result)
-
-
-def spawn_args(project: Path) -> list[list[str]]:
-    """Read the argv of each fake-claude spawn, in order."""
-    log = (project / "claude-calls.txt").read_text()
-    return [block.split("\0") for block in log.split("\0===\0") if block]
-
-
-def flag_value(args: list[str], name: str) -> str:
-    """Return the value following the flag in the argv."""
-    return args[args.index(name) + 1]
-
-
-def read_state() -> dict[str, object]:
-    """Read the run state file from the working directory."""
-    return dict(json.loads(STATE_FILE.read_text()))
-
-
-# Node runs in these tests take milliseconds; the tolerance absorbs a slow machine.
-SPENT = pytest.approx(0, abs=1)
-
 
 def test_loop_of_shell_commands_runs_to_end(
     dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
@@ -281,6 +159,7 @@ def test_loop_of_shell_commands_runs_to_end(
         "input": "issue #5",
         "node": "END",
         "visits": {"check": 2},
+        "node_runs": {"check": 2},
         "spent_time": SPENT,
         "spent_cost": 0,
     }
@@ -307,7 +186,7 @@ def test_visit_limit_without_limit_transition_escalates(
     assert captured.out == "spin: pass\nspin: pass\n"
     assert "node 'spin' reached its visit limit of 2" in captured.err
     assert "has no LIMIT transition" in captured.err
-    assert read_state()["stopped"] == "limit"
+    assert read_state()["stopped"] == "escalation"
 
 
 def test_reset_outcome_clears_the_visit_count(
@@ -341,7 +220,7 @@ def test_looping_limit_transitions_escalate(
     captured = capsys.readouterr()
     assert captured.out == "spin: pass\nspin: pass\n"
     assert "LIMIT transitions loop without running a node" in captured.err
-    assert read_state()["stopped"] == "limit"
+    assert read_state()["stopped"] == "escalation"
 
 
 @pytest.mark.parametrize("command", ["workgraph-no-such-cmd", "", "sh -c 'unterminated"])
@@ -382,6 +261,7 @@ def test_state_is_written_after_each_node_run(dirs: tuple[Path, Path]) -> None:
         "input": "input",
         "node": "first",
         "visits": {"first": 1},
+        "node_runs": {"first": 1},
         "spent_time": SPENT,
         "spent_cost": 0,
     }
@@ -409,6 +289,7 @@ def test_two_agent_loop_runs_to_end(
         "input": "issue #9",
         "node": "END",
         "visits": {"plan": 2, "build": 2},
+        "node_runs": {"plan": 2, "build": 2},
         "spent_time": SPENT,
         "spent_cost": 0,
     }
@@ -520,7 +401,8 @@ def test_spawn_flags_follow_the_decisions(
     [args] = spawn_args(project)
     assert "--bare" not in args
     assert flag_value(args, "-p") == "issue #9"
-    assert flag_value(args, "--output-format") == "json"
+    assert flag_value(args, "--output-format") == "stream-json"
+    assert "--verbose" in args
     schema = json.loads(flag_value(args, "--json-schema"))
     assert schema["properties"]["outcome"] == {"enum": ["done"]}
     assert schema["properties"]["handoff"]["type"] == "string"
@@ -632,6 +514,7 @@ def test_resume_after_a_failure_completes_the_run(
         "input": "issue #5",
         "node": "END",
         "visits": {"check": 1},
+        "node_runs": {"check": 2},
         "spent_time": SPENT,
         "spent_cost": 0,
     }
@@ -823,6 +706,7 @@ def test_map_all_passes_when_every_fanned_out_node_passes(
         "input": "input",
         "node": "END",
         "visits": {"checks": 1},
+        "node_runs": {"checks": 1, "lint": 1, "typecheck": 1},
         "spent_time": SPENT,
         "spent_cost": 0,
     }
@@ -1154,6 +1038,7 @@ def test_run_parks_at_a_gate(dirs: tuple[Path, Path], capsys: pytest.CaptureFixt
         "input": "issue #5",
         "node": "approve",
         "visits": {"check": 1},
+        "node_runs": {"check": 1},
         "stopped": "gate",
         "spent_time": SPENT,
         "spent_cost": 0,
@@ -1184,6 +1069,7 @@ def test_accept_forwards_the_pending_handoff_unchanged(
         "input": "issue #9",
         "node": "END",
         "visits": {"plan": 1},
+        "node_runs": {"plan": 1, "build": 1},
         "spent_time": SPENT,
         "spent_cost": 0,
     }
@@ -1293,6 +1179,7 @@ def test_accept_into_end_completes_the_run(
         "input": "input",
         "node": "END",
         "visits": {"check": 1},
+        "node_runs": {"check": 1},
         "spent_time": SPENT,
         "spent_cost": 0,
     }
@@ -1394,7 +1281,7 @@ def test_status_reports_a_run_that_reached_end(
         (
             "spin",
             SPIN.replace('LIMIT = "END"\n', ""),
-            "stopped at 'spin': limit\nnode 'spin' reached its visit limit of 2"
+            "stopped at 'spin': escalation\nnode 'spin' reached its visit limit of 2"
             " and has no LIMIT transition\nspent time: 0 s\n",
         ),
         (
@@ -1441,6 +1328,7 @@ def test_status_reports_an_interrupted_run(
     # A run interrupted between node runs leaves state without a stop reason and no lock.
     project, _ = dirs
     write(project, "loop", LOOP)
+    STATE_FILE.parent.mkdir()
     STATE_FILE.write_text(
         json.dumps({"workflow": "loop", "input": "i", "node": "check", "visits": {}})
     )
@@ -1459,24 +1347,6 @@ def test_status_honors_the_directory_flag(
     assert main(["--directory", str(target), "status"]) == 0
     assert capsys.readouterr().out.startswith("stopped at 'approve': gate\n")
 
-
-SOFT = """
-start = "wait"
-
-[budget]
-time_soft = 0.1
-
-[nodes.wait]
-command = "sleep 0.2"
-
-[nodes.wait.limits]
-visits = 3
-
-[nodes.wait.transitions]
-pass = "wait"
-fail = "wait"
-LIMIT = "END"
-"""
 
 HARD = """
 start = "wait"
@@ -1562,6 +1432,7 @@ def test_soft_limit_stops_the_run_before_the_next_node(
         "input": "input",
         "node": "wait",
         "visits": {"wait": 1},
+        "node_runs": {"wait": 1},
         "spent_time": pytest.approx(0.3, abs=0.1),
         "spent_cost": 0,
         "stopped": "budget",
@@ -1660,6 +1531,7 @@ def test_hard_limit_cuts_the_node_run_as_a_failure(
         "input": "input",
         "node": "wait",
         "visits": {"wait": 1},
+        "node_runs": {"wait": 1},
         "spent_time": pytest.approx(0.4, abs=0.1),
         "spent_cost": 0,
         "stopped": "failure",
@@ -1815,32 +1687,6 @@ def test_status_reports_a_budget_stop_with_the_effective_limits(
     )
 
 
-COST = """
-start = "plan"
-
-[budget]
-cost = 1.0
-
-[defaults]
-harness = "claude"
-model = "opus"
-effort = "high"
-
-[nodes.plan]
-agent = "planner"
-outcomes = ["done"]
-
-[nodes.plan.transitions]
-done = "build"
-
-[nodes.build]
-agent = "builder"
-outcomes = ["done"]
-
-[nodes.build.transitions]
-done = "END"
-"""
-
 COST_MAP = """
 start = "checks"
 
@@ -1873,14 +1719,6 @@ outcomes = ["pass"]
 """
 
 
-def cost_run(project: Path, *costs: float | None) -> None:
-    """Write the COST workflow and queue one planner or builder response per cost."""
-    write(project, "cost", COST)
-    for agent in ("planner", "builder"):
-        write_agent(project, agent, f"You are the {agent}.")
-    respond(project, *(outcome_response("done", f"plan {i}", cost) for i, cost in enumerate(costs)))
-
-
 def test_cost_limit_stops_the_run_before_the_next_node(
     dirs: tuple[Path, Path], fake_claude: None, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1895,6 +1733,7 @@ def test_cost_limit_stops_the_run_before_the_next_node(
         "input": "input",
         "node": "build",
         "visits": {"plan": 1},
+        "node_runs": {"plan": 1},
         "handoff": ["plan", "plan 0"],
         "spent_time": SPENT,
         "spent_cost": 1.0,
@@ -1983,11 +1822,11 @@ def test_spent_cost_and_grants_survive_an_escalation(
 ) -> None:
     project, _ = dirs
     write(project, "spin", SPIN.replace('LIMIT = "END"\n', ""))
-    STATE_FILE.parent.mkdir(exist_ok=True)
+    STATE_FILE.parent.mkdir()
     state = {"workflow": "spin", "input": "input", "node": "spin", "visits": {"spin": 2}}
     STATE_FILE.write_text(json.dumps({**state, "spent_cost": 0.5, "added_cost": 0.25}))
     assert main(["resume"]) == 3
-    assert read_state()["stopped"] == "limit"
+    assert read_state()["stopped"] == "escalation"
     assert read_state()["spent_cost"] == 0.5
     assert read_state()["added_cost"] == 0.25
 
