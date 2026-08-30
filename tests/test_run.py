@@ -1,8 +1,11 @@
 """Tests for running a workflow."""
 
 import json
+import re
 import time
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -11,6 +14,7 @@ from tests.conftest import (
     BROKEN,
     COST,
     LOOP,
+    MINIMAL,
     PLANNER,
     SOFT,
     SPENT,
@@ -26,7 +30,7 @@ from tests.conftest import (
     write_agent,
 )
 from workgraph.cli import main
-from workgraph.run import LOCK_FILE, STATE_FILE
+from workgraph.run import JOURNAL_FILE, LOCK_FILE, STATE_FILE
 
 RESET = """
 start = "check"
@@ -153,7 +157,7 @@ def test_loop_of_shell_commands_runs_to_end(
     project, _ = dirs
     write(project, "loop", LOOP)
     assert main(["run", "loop", "issue #5"]) == 0
-    assert capsys.readouterr().out == "check: fail\ncheck: pass\n"
+    assert capsys.readouterr().out == "check: fail\ncheck: pass\nEND · spent 0s\n"
     assert read_state() == {
         "workflow": "loop",
         "input": "issue #5",
@@ -172,7 +176,7 @@ def test_visit_limit_takes_the_limit_transition(
     project, _ = dirs
     write(project, "spin", SPIN)
     assert main(["run", "spin", "input"]) == 0
-    assert capsys.readouterr().out == "spin: pass\nspin: pass\n"
+    assert capsys.readouterr().out == "spin: pass\nspin: pass\nEND · spent 0s\n"
     assert read_state()["visits"] == {"spin": 2}
 
 
@@ -183,7 +187,7 @@ def test_visit_limit_without_limit_transition_escalates(
     write(project, "spin", SPIN.replace('LIMIT = "END"\n', ""))
     assert main(["run", "spin", "input"]) == 3
     captured = capsys.readouterr()
-    assert captured.out == "spin: pass\nspin: pass\n"
+    assert captured.out == "spin: pass\nspin: pass\nescalation at spin · spent 0s\n"
     assert "node 'spin' reached its visit limit of 2" in captured.err
     assert "has no LIMIT transition" in captured.err
     assert read_state()["stopped"] == "escalation"
@@ -197,6 +201,7 @@ def test_reset_outcome_clears_the_visit_count(
     assert main(["run", "reset", "input"]) == 0
     assert capsys.readouterr().out == (
         "check: fail\ncheck: pass\nrecheck: fail\ncheck: fail\ncheck: pass\nrecheck: pass\n"
+        "END · spent 0s\n"
     )
     assert read_state()["visits"] == {"recheck": 2}
 
@@ -207,7 +212,7 @@ def test_limit_trips_without_an_intervening_reset_outcome(
     project, _ = dirs
     write(project, "spin", SPIN.replace("visits = 2", 'visits = 2\nreset = "fail"'))
     assert main(["run", "spin", "input"]) == 0
-    assert capsys.readouterr().out == "spin: pass\nspin: pass\n"
+    assert capsys.readouterr().out == "spin: pass\nspin: pass\nEND · spent 0s\n"
     assert read_state()["visits"] == {"spin": 2}
 
 
@@ -218,7 +223,7 @@ def test_looping_limit_transitions_escalate(
     write(project, "spin", SPIN.replace('LIMIT = "END"', 'LIMIT = "spin"'))
     assert main(["run", "spin", "input"]) == 3
     captured = capsys.readouterr()
-    assert captured.out == "spin: pass\nspin: pass\n"
+    assert captured.out == "spin: pass\nspin: pass\nescalation at spin · spent 0s\n"
     assert "LIMIT transitions loop without running a node" in captured.err
     assert read_state()["stopped"] == "escalation"
 
@@ -231,7 +236,7 @@ def test_non_spawnable_command_stops_the_run(
     write(project, "broken", BROKEN.replace("workgraph-no-such-cmd", command))
     assert main(["run", "broken", "input"]) == 2
     captured = capsys.readouterr()
-    assert captured.out == "check: failure\n"
+    assert captured.out == "check: failure\nfailure at check · spent 0s\n"
     assert "node 'check': spawn failure" in captured.err
     assert read_state()["visits"] == {"check": 1}
     assert read_state()["stopped"] == "failure"
@@ -259,7 +264,7 @@ def test_state_is_written_after_each_node_run(dirs: tuple[Path, Path]) -> None:
     assert snapshot == {
         "workflow": "chain",
         "input": "input",
-        "node": "first",
+        "node": "second",
         "visits": {"first": 1},
         "node_runs": {"first": 1},
         "spent_time": SPENT,
@@ -283,7 +288,10 @@ def test_two_agent_loop_runs_to_end(
         outcome_response("done"),
     )
     assert main(["run", "pair", "issue #9"]) == 0
-    assert capsys.readouterr().out == "plan: done\nbuild: rework\nplan: done\nbuild: done\n"
+    assert (
+        capsys.readouterr().out
+        == "plan: done\nbuild: rework\nplan: done\nbuild: done\nEND · spent 0s\n"
+    )
     assert read_state() == {
         "workflow": "pair",
         "input": "issue #9",
@@ -343,7 +351,7 @@ def test_command_before_end_discards_the_handoff(
     write_agent(project, "reviewer", "You are the reviewer.")
     respond(project, outcome_response("done", handoff="Ship it."))
     assert main(["run", "chain", "issue #9"]) == 0
-    assert capsys.readouterr().out == "review: done\nsnapshot: pass\n"
+    assert capsys.readouterr().out == "review: done\nsnapshot: pass\nEND · spent 0s\n"
     snapshot = json.loads((project / "snapshot.json").read_text())
     assert snapshot["handoff"] == ["review", "Ship it."]
     assert "handoff" not in read_state()
@@ -397,7 +405,7 @@ def test_spawn_flags_follow_the_decisions(
     write_agent(project, "planner", PLANNER)
     respond(project, outcome_response("done"))
     assert main(["run", "agents", "issue #9"]) == 0
-    assert capsys.readouterr().out == "plan: done\n"
+    assert capsys.readouterr().out == "plan: done\nEND · spent 0s\n"
     [args] = spawn_args(project)
     assert "--bare" not in args
     assert flag_value(args, "-p") == "issue #9"
@@ -441,7 +449,7 @@ def test_each_agent_failure_kind_stops_the_run(
     respond(project, response)
     assert main(["run", "agents", "input"]) == 2
     captured = capsys.readouterr()
-    assert captured.out == "plan: failure\n"
+    assert captured.out == "plan: failure\nfailure at plan · spent 0s\n"
     assert "node 'plan'" in captured.err
     assert message in captured.err
     assert read_state()["visits"] == {"plan": 1}
@@ -478,7 +486,7 @@ def test_missing_agent_definition_stops_the_run(
     write(project, "agents", AGENT)
     assert main(["run", "agents", "input"]) == 2
     captured = capsys.readouterr()
-    assert captured.out == "plan: failure\n"
+    assert captured.out == "plan: failure\nfailure at plan · spent 0s\n"
     assert "agent definition 'planner' not found" in captured.err
     assert read_state()["visits"] == {"plan": 1}
 
@@ -494,7 +502,7 @@ def test_unspawnable_harness_stops_the_run(
     monkeypatch.setenv("PATH", str(empty))
     assert main(["run", "agents", "input"]) == 2
     captured = capsys.readouterr()
-    assert captured.out == "plan: failure\n"
+    assert captured.out == "plan: failure\nfailure at plan · spent 0s\n"
     assert "node 'plan': spawn failure" in captured.err
 
 
@@ -508,7 +516,9 @@ def test_resume_after_a_failure_completes_the_run(
     fixit.write_text("#!/bin/sh\nexit 0\n")
     fixit.chmod(0o755)
     assert main(["resume"]) == 0
-    assert capsys.readouterr().out == "check: failure\ncheck: pass\n"
+    assert capsys.readouterr().out == (
+        "check: failure\nfailure at check · spent 0s\ncheck: pass\nEND · spent 0s\n"
+    )
     assert read_state() == {
         "workflow": "fixable",
         "input": "issue #5",
@@ -537,7 +547,9 @@ def test_entries_after_the_grace_re_entry_are_counted(
     fixit.write_text("#!/bin/sh\ntest -f flag || { touch flag; exit 1; }\n")
     fixit.chmod(0o755)
     assert main(["resume"]) == 0
-    assert capsys.readouterr().out == "check: failure\ncheck: fail\ncheck: pass\n"
+    assert capsys.readouterr().out == (
+        "check: failure\nfailure at check · spent 0s\ncheck: fail\ncheck: pass\nEND · spent 0s\n"
+    )
     assert read_state()["visits"] == {"check": 2}
 
 
@@ -550,7 +562,7 @@ def test_resume_after_an_escalation_grants_one_grace_pass(
     capsys.readouterr()
     assert main(["resume"]) == 3
     captured = capsys.readouterr()
-    assert captured.out == "spin: pass\n"
+    assert captured.out == "spin: pass\nescalation at spin · spent 0s\n"
     assert "node 'spin' reached its visit limit of 2" in captured.err
     assert read_state()["visits"] == {"spin": 2}
     assert not LOCK_FILE.exists()
@@ -565,7 +577,7 @@ def test_resume_after_a_looping_limit_escalation_grants_one_grace_pass(
     capsys.readouterr()
     assert main(["resume"]) == 3
     captured = capsys.readouterr()
-    assert captured.out == "spin: pass\n"
+    assert captured.out == "spin: pass\nescalation at spin · spent 0s\n"
     assert "LIMIT transitions loop without running a node" in captured.err
     assert read_state()["visits"] == {"spin": 2}
 
@@ -700,7 +712,7 @@ def test_map_all_passes_when_every_fanned_out_node_passes(
     assert main(["run", "fan", "input"]) == 0
     lines = capsys.readouterr().out.splitlines()
     assert sorted(lines[:2]) == ["checks/lint: pass", "checks/typecheck: pass"]
-    assert lines[2:] == ["checks: pass"]
+    assert lines[2:] == ["checks: pass", "END · spent 0s"]
     assert read_state() == {
         "workflow": "fan",
         "input": "input",
@@ -721,7 +733,7 @@ def test_map_all_fails_when_one_fanned_out_node_fails(
     assert main(["run", "fan", "input"]) == 0
     lines = capsys.readouterr().out.splitlines()
     assert sorted(lines[:2]) == ["checks/lint: pass", "checks/typecheck: fail"]
-    assert lines[2:] == ["checks: fail"]
+    assert lines[2:] == ["checks: fail", "END · spent 0s"]
 
 
 def test_map_any_passes_when_one_fanned_out_node_passes(
@@ -736,7 +748,7 @@ def test_map_any_passes_when_one_fanned_out_node_passes(
     lines = capsys.readouterr().out.splitlines()
     # No short-circuit: the failing node still runs and prints before the map resolves.
     assert sorted(lines[:2]) == ["checks/lint: pass", "checks/typecheck: fail"]
-    assert lines[2:] == ["checks: pass"]
+    assert lines[2:] == ["checks: pass", "END · spent 0s"]
 
 
 def test_map_any_fails_when_no_fanned_out_node_passes(
@@ -748,7 +760,7 @@ def test_map_any_fails_when_no_fanned_out_node_passes(
     )
     write(project, "fan", fan)
     assert main(["run", "fan", "input"]) == 0
-    assert capsys.readouterr().out.splitlines()[2:] == ["checks: fail"]
+    assert capsys.readouterr().out.splitlines()[2:] == ["checks: fail", "END · spent 0s"]
 
 
 def test_map_fanned_out_nodes_run_in_parallel(
@@ -761,7 +773,7 @@ def test_map_fanned_out_nodes_run_in_parallel(
     script.write_text(AWAIT)
     script.chmod(0o755)
     assert main(["run", "rendezvous", "input"]) == 0
-    assert capsys.readouterr().out.splitlines()[2:] == ["checks: pass"]
+    assert capsys.readouterr().out.splitlines()[2:] == ["checks: pass", "END · spent 0s"]
 
 
 def test_map_fanned_out_failure_counts_as_fail_and_never_stops_the_run(
@@ -776,7 +788,7 @@ def test_map_fanned_out_failure_counts_as_fail_and_never_stops_the_run(
     assert main(["run", "fan", "input"]) == 0
     lines = capsys.readouterr().out.splitlines()
     assert sorted(lines[:2]) == ["checks/lint: pass", "checks/typecheck: fail"]
-    assert lines[2:] == ["checks: pass"]
+    assert lines[2:] == ["checks: pass", "END · spent 0s"]
     assert read_state()["node"] == "END"
 
 
@@ -792,7 +804,7 @@ def test_map_visit_limit_takes_the_limit_transition(
     write(project, "fan", FAN_LOOP)
     assert main(["run", "fan", "input"]) == 0
     lines = capsys.readouterr().out.splitlines()
-    assert len(lines) == 6
+    assert len(lines) == 7
     assert lines[2] == "checks: pass"
     assert lines[5] == "checks: pass"
     assert read_state()["visits"] == {"checks": 2}
@@ -809,7 +821,7 @@ def test_resume_reruns_the_entire_fan_out(
     captured = capsys.readouterr()
     lines = captured.out.splitlines()
     assert sorted(lines[:2]) == ["checks/lint: pass", "checks/typecheck: pass"]
-    assert lines[2:] == ["checks: pass"]
+    assert lines[2:] == ["checks: pass", "escalation at checks · spent 0s"]
     assert "node 'checks' reached its visit limit of 2" in captured.err
     assert read_state()["visits"] == {"checks": 2}
 
@@ -902,7 +914,11 @@ def test_map_handoffs_concatenate_in_declaration_order(
     respond_agent(project, "reviewer", outcome_response("pass", handoff="Two nits."))
     respond_agent(project, "summarizer", outcome_response("done"))
     assert main(["run", "fan", "issue #9"]) == 0
-    assert capsys.readouterr().out.splitlines()[3:] == ["checks: pass", "summarize: done"]
+    assert capsys.readouterr().out.splitlines()[3:] == [
+        "checks: pass",
+        "summarize: done",
+        "END · spent 0s",
+    ]
     [summarize_args] = [
         args for args in spawn_args(project) if flag_value(args, "--agent") == "summarizer"
     ]
@@ -927,7 +943,7 @@ def test_directory_executes_and_stores_state_in_the_target(
     project, _ = dirs
     write(project, "mark", LOOP.replace("test -f flag", "test -f flag && touch marker"))
     assert main(["--directory", str(target), "run", "mark", "input"]) == 0
-    assert capsys.readouterr().out == "check: fail\ncheck: pass\n"
+    assert capsys.readouterr().out == "check: fail\ncheck: pass\nEND · spent 0s\n"
     assert (target / "marker").exists()
     assert not (project / "marker").exists()
     assert json.loads((target / STATE_FILE).read_text())["node"] == "END"
@@ -958,7 +974,7 @@ def test_directory_resume_reads_target_state_and_invocation_workflow(
     fixit.chmod(0o755)
     capsys.readouterr()
     assert main(["--directory", str(target), "resume"]) == 0
-    assert capsys.readouterr().out == "check: pass\n"
+    assert capsys.readouterr().out == "check: pass\nEND · spent 0s\n"
     assert json.loads((target / STATE_FILE).read_text())["node"] == "END"
 
 
@@ -1022,7 +1038,7 @@ done = "END"
 rework = "plan"
 """
 
-PARKED = "approve: parked\nShip it?\nNo review material.\n"
+PARKED = "approve: parked\nparked at approve: Ship it? · spent 0s\nNo review material.\n"
 PARKED_PLAN = PARKED.replace("Ship it?", "Ship the plan?")
 
 
@@ -1056,12 +1072,12 @@ def test_accept_forwards_the_pending_handoff_unchanged(
     respond(project, outcome_response("done", handoff="Split the work in two."))
     assert main(["run", "gated", "issue #9"]) == 4
     assert capsys.readouterr().out == (
-        "plan: done\napprove: parked\nShip the plan?\n"
+        "plan: done\napprove: parked\nparked at approve: Ship the plan? · spent 0s\n"
         "Review material from plan:\nSplit the work in two.\n"
     )
     respond(project, outcome_response("done"))
     assert main(["resume", "--decision", "accept"]) == 0
-    assert capsys.readouterr().out == "approve: accept\nbuild: done\n"
+    assert capsys.readouterr().out == "approve: accept\nbuild: done\nEND · spent 0s\n"
     prompts = [flag_value(args, "-p") for args in spawn_args(project)]
     assert prompts == ["issue #9", "issue #9\n\nHandoff from plan:\nSplit the work in two."]
     assert read_state() == {
@@ -1158,7 +1174,8 @@ def test_gate_as_limit_target_reviews_the_pending_handoff(
     capsys.readouterr()
     assert main(["resume", "--decision", "accept"]) == 4
     assert capsys.readouterr().out == (
-        "approve: accept\nbuild: rework\napprove: parked\nShip the plan?\n"
+        "approve: accept\nbuild: rework\napprove: parked\n"
+        "parked at approve: Ship the plan? · spent 0s\n"
         "Review material from build:\nToo vague.\n"
     )
     assert read_state()["handoff"] == ["build", "Too vague."]
@@ -1173,7 +1190,7 @@ def test_accept_into_end_completes_the_run(
     assert main(["run", "gated", "input"]) == 4
     capsys.readouterr()
     assert main(["resume", "--decision", "accept"]) == 0
-    assert capsys.readouterr().out == "approve: accept\n"
+    assert capsys.readouterr().out == "approve: accept\nEND · spent 0s\n"
     assert read_state() == {
         "workflow": "gated",
         "input": "input",
@@ -1194,7 +1211,7 @@ def test_reject_re_enters_the_target_as_a_grace_entry(
     capsys.readouterr()
     assert main(["resume", "--decision", "reject", "--feedback", "Not yet."]) == 4
     assert capsys.readouterr().out == (
-        "approve: reject\ncheck: pass\napprove: parked\nShip it?\n"
+        "approve: reject\ncheck: pass\napprove: parked\nparked at approve: Ship it? · spent 0s\n"
         'Review material from approve:\n{"received": null, "feedback": "Not yet."}\n'
     )
     assert read_state()["visits"] == {"check": 1}
@@ -1246,16 +1263,67 @@ def test_status_without_a_run_exits_with_an_error(
     assert capsys.readouterr().err == "no run in .\n"
 
 
-def test_status_reports_a_run_in_progress(
-    dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize(
+    ("events", "line"),
+    [
+        pytest.param(
+            [
+                {"event": "start", "ago": 60, "node": "checks#1"},
+                {"event": "start", "ago": 7, "node": "lint#1", "map": "checks"},
+            ],
+            "running checks/lint#1 7s… · spent 1m05s\n",
+            id="ends-on-start",
+        ),
+        pytest.param(
+            [
+                {"event": "start", "ago": 60, "node": "checks#1"},
+                {"event": "start", "ago": 60, "node": "lint#1", "map": "checks"},
+                {"event": "start", "ago": 50, "node": "test#1", "map": "checks"},
+                {"event": "end", "ago": 2, "node": "lint#1", "map": "checks"},
+            ],
+            "running checks/test#1 50s… · spent 1m05s\n",
+            id="ends-on-a-fanned-out-end",
+        ),
+        pytest.param(
+            [
+                {"event": "start", "ago": 20, "node": "checks#1"},
+                {"event": "end", "ago": 10, "node": "checks#1"},
+                {"event": "limit", "ago": 10, "node": "checks", "target": "END"},
+            ],
+            "running checks#1 20s… · spent 1m05s\n",
+            id="ends-on-limit",
+        ),
+        pytest.param(
+            [
+                {"event": "start", "ago": 20, "node": "checks#1"},
+                {"event": "end", "ago": 10, "node": "checks#1"},
+                {"event": "stop", "ago": 10, "reason": "failure", "node": "checks"},
+                {"event": "resume", "ago": 3},
+            ],
+            "running checks 3s… · spent 1m05s\n",
+            id="ends-on-resume",
+        ),
+    ],
+)
+def test_status_reports_the_run_in_progress_from_the_last_start(
+    dirs: tuple[Path, Path],
+    capsys: pytest.CaptureFixture[str],
+    events: list[dict[str, Any]],
+    line: str,
 ) -> None:
-    project, _ = dirs
-    write(project, "broken", BROKEN)
-    assert main(["run", "broken", "input"]) == 2
+    STATE_FILE.parent.mkdir(parents=True)
+    STATE_FILE.write_text(
+        json.dumps({"workflow": "fan", "input": "i", "node": "checks", "spent_time": 65})
+    )
+    # Each event's `ago` is its age in seconds, resolved to a time stamp now.
+    now = datetime.now(UTC)
+    events = [{"event": "run", "ago": 60, "workflow": "fan", "input": "i"}, *events]
+    for event in events:
+        event["time"] = (now - timedelta(seconds=event.pop("ago"))).isoformat(timespec="seconds")
+    JOURNAL_FILE.write_text("".join(json.dumps(e) + "\n" for e in events) + '{"event": "sta')
     LOCK_FILE.touch()
-    capsys.readouterr()
     assert main(["status"]) == 0
-    assert capsys.readouterr().out == "a run is in progress at node 'check'\n"
+    assert capsys.readouterr().out == line
 
 
 def test_status_reports_a_run_that_reached_end(
@@ -1266,7 +1334,7 @@ def test_status_reports_a_run_that_reached_end(
     assert main(["run", "loop", "input"]) == 0
     capsys.readouterr()
     assert main(["status"]) == 0
-    assert capsys.readouterr().out == "the run reached END\n"
+    assert capsys.readouterr().out == "END · spent 0s\n"
 
 
 @pytest.mark.parametrize(
@@ -1275,19 +1343,19 @@ def test_status_reports_a_run_that_reached_end(
         (
             "broken",
             BROKEN,
-            "stopped at 'check': failure\nnode 'check': spawn failure:"
+            "failure at check · spent 0s\nnode 'check': spawn failure:"
             " [Errno 2] No such file or directory: 'workgraph-no-such-cmd'\nspent time: 0 s\n",
         ),
         (
             "spin",
             SPIN.replace('LIMIT = "END"\n', ""),
-            "stopped at 'spin': escalation\nnode 'spin' reached its visit limit of 2"
+            "escalation at spin · spent 0s\nnode 'spin' reached its visit limit of 2"
             " and has no LIMIT transition\nspent time: 0 s\n",
         ),
         (
             "gated",
             GATED,
-            "stopped at 'approve': gate\nShip it?\nNo review material.\nspent time: 0 s\n",
+            "parked at approve: Ship it? · spent 0s\nNo review material.\nspent time: 0 s\n",
         ),
     ],
 )
@@ -1317,7 +1385,7 @@ def test_status_shows_the_review_material_of_a_parked_run(
     capsys.readouterr()
     assert main(["status"]) == 0
     assert capsys.readouterr().out == (
-        "stopped at 'approve': gate\nShip the plan?\n"
+        "parked at approve: Ship the plan? · spent 0s\n"
         "Review material from plan:\nSplit the work in two.\nspent time: 0 s\n"
     )
 
@@ -1325,15 +1393,106 @@ def test_status_shows_the_review_material_of_a_parked_run(
 def test_status_reports_an_interrupted_run(
     dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # A run interrupted between node runs leaves state without a stop reason and no lock.
+    # No lock and no stop event: the process died between events.
     project, _ = dirs
     write(project, "loop", LOOP)
     STATE_FILE.parent.mkdir()
     STATE_FILE.write_text(
-        json.dumps({"workflow": "loop", "input": "i", "node": "check", "visits": {}})
+        json.dumps(
+            {
+                "workflow": "loop",
+                "input": "i",
+                "node": "check",
+                "spent_time": 3725,
+                "spent_cost": 0.5,
+            }
+        )
     )
+    JOURNAL_FILE.write_text('{"event": "run", "time": "2026-08-30T10:00:00+00:00"}\n')
     assert main(["status"]) == 0
-    assert capsys.readouterr().out == "stopped at 'check': interrupted\nspent time: 0 s\n"
+    assert capsys.readouterr().out == (
+        "interrupted at check · spent 1h02m · $0.50\nspent time: 3725 s\n"
+    )
+
+
+def test_status_reports_an_interrupted_run_without_a_journal(
+    dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    write(project, "loop", LOOP)
+    STATE_FILE.parent.mkdir()
+    STATE_FILE.write_text(json.dumps({"workflow": "loop", "input": "i", "node": "check"}))
+    assert main(["status"]) == 0
+    assert capsys.readouterr().out == "interrupted at check · spent 0s\nspent time: 0 s\n"
+
+
+def test_interrupt_ends_on_the_interrupted_line(
+    dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    interrupt = "\"sh -c 'kill -INT $PPID; sleep 5'\""
+    write(project, "self", MINIMAL.replace('"true"', interrupt))
+    assert main(["run", "self", "input"]) == 130
+    assert capsys.readouterr().out == "interrupted at check · spent 0s\n"
+    assert not LOCK_FILE.exists()
+
+
+def test_status_reports_the_first_node_run_of_a_run_in_progress(dirs: tuple[Path, Path]) -> None:
+    project, _ = dirs
+    write(project, "self", MINIMAL.replace('"true"', '"workgraph status"'))
+    assert main(["run", "self", "input"]) == 0
+    stdout = (STATE_FILE.parent / "check#1.stdout").read_text()
+    # Journal times hold whole seconds, so the elapsed time reads 0s or 1s.
+    assert re.fullmatch("running check#1 [01]s… · spent 0s\n", stdout)
+
+
+def test_status_reports_a_run_in_progress_before_its_first_node_run(
+    dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    STATE_FILE.parent.mkdir(parents=True)
+    STATE_FILE.write_text(json.dumps({"workflow": "loop", "input": "i", "node": "check"}))
+    started = (datetime.now(UTC) - timedelta(seconds=3)).isoformat(timespec="seconds")
+    JOURNAL_FILE.write_text(json.dumps({"event": "run", "time": started}) + "\n")
+    LOCK_FILE.touch()
+    assert main(["status"]) == 0
+    assert capsys.readouterr().out == "running check 3s… · spent 0s\n"
+
+
+def test_status_after_a_resume_drops_the_previous_stop(dirs: tuple[Path, Path]) -> None:
+    project, _ = dirs
+    probe = '\n[nodes.probe]\ncommand = "workgraph status"\n\n[nodes.probe.transitions]\n'
+    probe += 'pass = "END"\nfail = "END"\n'
+    write(project, "gated", GATED.replace('reject = "check"', 'reject = "probe"') + probe)
+    assert main(["run", "gated", "input"]) == 4
+    assert main(["resume", "--decision", "reject", "--feedback", "no"]) == 0
+    stdout = (STATE_FILE.parent / "probe#1.stdout").read_text()
+    assert re.fullmatch("running probe#1 [01]s… · spent 0s\n", stdout)
+
+
+def test_status_reads_the_stop_from_the_journal(
+    dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A stop in the state without a stop event in the journal is an interruption.
+    project, _ = dirs
+    write(project, "loop", LOOP)
+    STATE_FILE.parent.mkdir()
+    state = {"workflow": "loop", "input": "i", "node": "check", "stopped": "failure"}
+    STATE_FILE.write_text(json.dumps(state))
+    JOURNAL_FILE.write_text('{"event": "run", "time": "2026-08-30T10:00:00+00:00"}\n')
+    assert main(["status"]) == 0
+    assert capsys.readouterr().out == "interrupted at check · spent 0s\nspent time: 0 s\n"
+
+
+def test_status_needs_no_workflow_for_a_run_at_end(
+    dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    write(project, "loop", LOOP)
+    assert main(["run", "loop", "input"]) == 0
+    (project / ".workgraph" / "workflows" / "loop.toml").unlink()
+    capsys.readouterr()
+    assert main(["status"]) == 0
+    assert capsys.readouterr().out == "END · spent 0s\n"
 
 
 def test_status_honors_the_directory_flag(
@@ -1345,7 +1504,19 @@ def test_status_honors_the_directory_flag(
     capsys.readouterr()
     assert main(["status"]) == 1
     assert main(["--directory", str(target), "status"]) == 0
-    assert capsys.readouterr().out.startswith("stopped at 'approve': gate\n")
+    assert capsys.readouterr().out.startswith("parked at approve: Ship it?")
+
+
+def test_stop_line_is_styled_on_a_terminal(
+    dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project, _ = dirs
+    write(project, "loop", LOOP)
+    assert main(["run", "loop", "input"]) == 0
+    capsys.readouterr()
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    assert main(["status"]) == 0
+    assert capsys.readouterr().out.startswith("\x1b[32mEND\x1b[0m")
 
 
 HARD = """
@@ -1425,7 +1596,7 @@ def test_soft_limit_stops_the_run_before_the_next_node(
     write(project, "soft", SOFT)
     assert main(["run", "soft", "input"]) == 5
     captured = capsys.readouterr()
-    assert captured.out == "wait: pass\nwait: budget\n"
+    assert captured.out == "wait: pass\nwait: budget\nbudget at wait · spent 0s\n"
     assert captured.err == "node 'wait': soft time limit of 0.1 s reached\n"
     assert read_state() == {
         "workflow": "soft",
@@ -1481,7 +1652,7 @@ def test_budget_stop_resume_with_a_grant_enters_the_node_as_a_grace_entry(
     assert main(["run", "soft", "input"]) == 5
     capsys.readouterr()
     assert main(["resume", "--add-time", "0.25"]) == 5
-    assert capsys.readouterr().out == "wait: pass\nwait: budget\n"
+    assert capsys.readouterr().out == "wait: pass\nwait: budget\nbudget at wait · spent 0s\n"
     assert read_state()["visits"] == {"wait": 1}
     assert spent_time() == pytest.approx(0.5, abs=0.1)
 
@@ -1495,11 +1666,14 @@ def test_budget_stop_keeps_the_pending_handoff_for_the_resume(
     write_agent(project, "builder", "You are the builder.")
     respond(project, outcome_response("done", handoff="Split the work in two."))
     assert main(["run", "soft", "issue #9"]) == 5
-    assert capsys.readouterr().out == "plan: done\nwait: pass\nbuild: budget\n"
+    assert (
+        capsys.readouterr().out
+        == "plan: done\nwait: pass\nbuild: budget\nbudget at build · spent 0s\n"
+    )
     assert read_state()["handoff"] == ["plan", "Split the work in two."]
     respond(project, outcome_response("done"))
     assert main(["resume", "--add-time", "1s"]) == 0
-    assert capsys.readouterr().out == "build: done\n"
+    assert capsys.readouterr().out == "build: done\nEND · spent 0s\n"
     prompts = [flag_value(args, "-p") for args in spawn_args(project)]
     assert prompts == ["issue #9", "issue #9\n\nHandoff from plan:\nSplit the work in two."]
     assert read_state()["node"] == "END"
@@ -1524,7 +1698,7 @@ def test_hard_limit_cuts_the_node_run_as_a_failure(
     write(project, "hard", HARD)
     assert main(["run", "hard", "input"]) == 2
     captured = capsys.readouterr()
-    assert captured.out == "wait: failure\n"
+    assert captured.out == "wait: failure\nfailure at wait · spent 0s\n"
     assert captured.err == "node 'wait': hard time limit of 0.3 s reached\n"
     assert read_state() == {
         "workflow": "hard",
@@ -1566,7 +1740,7 @@ def test_hard_cut_resume_with_a_grant_is_a_grace_entry(
     assert main(["run", "hard", "input"]) == 2
     capsys.readouterr()
     assert main(["resume", "--add-time", "1s"]) == 0
-    assert capsys.readouterr().out == "wait: pass\n"
+    assert capsys.readouterr().out == "wait: pass\nEND · spent 0s\n"
     assert read_state()["visits"] == {"wait": 1}
 
 
@@ -1591,6 +1765,7 @@ def test_map_child_cut_by_the_hard_limit_fails_and_the_run_stops_before_the_next
     assert main(["run", "sleeps", "input"]) == 5
     captured = capsys.readouterr()
     assert sorted(captured.out.splitlines()) == [
+        "budget at checks · spent 0s",
         "checks/slow: fail",
         "checks/slower: pass",
         "checks: budget",
@@ -1612,9 +1787,10 @@ def test_grants_accumulate_across_resumes(
     capsys.readouterr()
     assert read_state()["added_time"] == pytest.approx(0.6)
     assert main(["status"]) == 0
-    assert capsys.readouterr().out == (
-        "stopped at 'wait': budget\nnode 'wait': soft time limit of 0.7 s reached\n"
-        "spent time: 1 s\nsoft limit: 0.7 s\n"
+    out = capsys.readouterr().out
+    assert out.startswith("budget at wait · spent ")
+    assert out.endswith(
+        "node 'wait': soft time limit of 0.7 s reached\nspent time: 1 s\nsoft limit: 0.7 s\n"
     )
 
 
@@ -1626,7 +1802,7 @@ def test_grant_lets_a_budget_stopped_run_pass_the_old_limit(
     assert main(["run", "soft", "input"]) == 5
     capsys.readouterr()
     assert main(["resume", "--add-time", "1s"]) == 0
-    assert capsys.readouterr().out == "wait: pass\nwait: pass\nwait: pass\n"
+    assert capsys.readouterr().out.startswith("wait: pass\nwait: pass\nwait: pass\nEND · spent ")
     assert read_state()["visits"] == {"wait": 3}
     assert spent_time() == pytest.approx(0.9, abs=0.15)
 
@@ -1682,7 +1858,7 @@ def test_status_reports_a_budget_stop_with_the_effective_limits(
     capsys.readouterr()
     assert main(["status"]) == 0
     assert capsys.readouterr().out == (
-        "stopped at 'wait': budget\nnode 'wait': soft time limit of 0.1 s reached\n"
+        "budget at wait · spent 0s\nnode 'wait': soft time limit of 0.1 s reached\n"
         "spent time: 0 s\nsoft limit: 0.1 s\nhard limit: 3600 s\n"
     )
 
@@ -1726,7 +1902,7 @@ def test_cost_limit_stops_the_run_before_the_next_node(
     cost_run(project, 1.0)
     assert main(["run", "cost", "input"]) == 5
     captured = capsys.readouterr()
-    assert captured.out == "plan: done\nbuild: budget\n"
+    assert captured.out == "plan: done\nbuild: budget\nbudget at build · spent 0s · $1.00\n"
     assert captured.err == "node 'build': cost limit of 1 USD reached\n"
     assert read_state() == {
         "workflow": "cost",
@@ -1771,7 +1947,7 @@ def test_cost_grant_enters_the_node_as_a_grace_entry_and_accumulates(
     STATE_FILE.write_text(json.dumps({**read_state(), "added_cost": 0.3}))
     capsys.readouterr()
     assert main(["resume", "--add-cost", "0.5"]) == 0
-    assert capsys.readouterr().out == "build: done\n"
+    assert capsys.readouterr().out == "build: done\nEND · spent 0s · $2.00\n"
     assert flag_value(spawn_args(project)[1], "-p") == "input\n\nHandoff from plan:\nplan 0"
     assert read_state()["visits"] == {"plan": 1}
     assert read_state()["added_cost"] == 0.8
@@ -1865,6 +2041,56 @@ def test_status_reports_a_cost_stop_with_the_effective_limits(
     capsys.readouterr()
     assert main(["status"]) == 0
     assert capsys.readouterr().out == (
-        "stopped at 'build': budget\nnode 'build': cost limit of 1 USD reached\n"
+        "budget at build · spent 0s · $1.50\nnode 'build': cost limit of 1 USD reached\n"
         "spent time: 0 s\nsoft limit: 60 s\nspent cost: 1.50 USD\ncost limit: 1.25 USD\n"
     )
+
+
+def test_run_ends_on_the_stop_line_with_cost_when_non_zero(
+    dirs: tuple[Path, Path], fake_claude: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    write(project, "loop", LOOP)
+    assert main(["run", "loop", "input"]) == 0
+    assert capsys.readouterr().out == "check: fail\ncheck: pass\nEND · spent 0s\n"
+    cost_run(project, 0.25, 0.5)
+    assert main(["run", "cost", "input"]) == 0
+    assert capsys.readouterr().out == "plan: done\nbuild: done\nEND · spent 0s · $0.75\n"
+    # A cost that rounds to $0.00 counts as zero.
+    cost_run(project, 0.001, 0.002)
+    assert main(["run", "cost", "input"]) == 0
+    assert capsys.readouterr().out == "plan: done\nbuild: done\nEND · spent 0s\n"
+
+
+@pytest.mark.parametrize(
+    ("workflow", "text", "code", "out"),
+    [
+        ("broken", BROKEN, 2, "check: failure\nfailure at check · spent 0s\n"),
+        (
+            "spin",
+            SPIN.replace('LIMIT = "END"\n', ""),
+            3,
+            "spin: pass\nspin: pass\nescalation at spin · spent 0s\n",
+        ),
+        (
+            "gated",
+            GATED,
+            4,
+            "check: pass\napprove: parked\nparked at approve: Ship it? · spent 0s\n"
+            "No review material.\n",
+        ),
+        ("soft", SOFT, 5, "wait: pass\nwait: budget\nbudget at wait · spent 0s\n"),
+    ],
+)
+def test_every_stop_ends_on_the_stop_line(
+    dirs: tuple[Path, Path],
+    capsys: pytest.CaptureFixture[str],
+    workflow: str,
+    text: str,
+    code: int,
+    out: str,
+) -> None:
+    project, _ = dirs
+    write(project, workflow, text)
+    assert main(["run", workflow, "input"]) == code
+    assert capsys.readouterr().out == out
