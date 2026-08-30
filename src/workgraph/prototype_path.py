@@ -198,6 +198,11 @@ def parked_at(steps: list[tuple[str, Any]]) -> dict[str, Any] | None:
     return None
 
 
+def spent(steps: list[tuple[str, Any]], now: datetime) -> str:
+    """Spent time per CONTEXT.md: the node runs' wall-clock, a map node run counted once."""
+    return fmt(sum(((nr["end"] or now) - nr["start"]).total_seconds() for k, nr in steps if k == "run"))
+
+
 def status(wf: dict[str, Any], steps: list[tuple[str, Any]], now: datetime) -> str:
     kind, s = steps[-1]
     if kind == "stop":
@@ -456,7 +461,7 @@ def render(wf: dict[str, Any], events: list[dict[str, Any]], now: datetime, vari
     steps = model(events)
     line = status(wf, steps, now)
     style = {"p": "bold yellow", "r": "bold"}.get(line[0], "green" if line == "stopped: end" else "red" if "failure" in line else "bold yellow")
-    console.print(Text('run: dev "#62" · ').append(line, style))
+    console.print(Text(f'run: dev "#62" · spent {spent(steps, now)} · ').append(line, style))
     console.print()
     if variant == "A":
         console.print(chain(steps, now, console.width), highlight=False, markup=False)
