@@ -70,6 +70,10 @@ _Avoid_: Log, history, trace
 Keeping an inspection view current while the run writes. A follow ends when the run stops or the followed node run ends.
 _Avoid_: Tail, watch, attach
 
+**Interrupted**:
+A run whose process exited between events, leaving no stop. It resumes at the node it was entering.
+_Avoid_: Crashed, killed, aborted
+
 **Failure**:
 A node run ending without an outcome; the run stops.
 _Avoid_: Crash
