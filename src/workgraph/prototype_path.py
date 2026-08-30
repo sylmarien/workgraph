@@ -265,9 +265,9 @@ def chain(steps: list[tuple[str, Any]], now: datetime, width: int) -> str:
 
 # --- variant D: vertical chain ---------------------------------------------
 
-# Glyphs. A coded failure (command or map fail, or a failure) shows the x mark.
+# Glyphs. A coded pass shows the check mark, a coded fail or a failure the x mark.
 GLYPHS = {
-    "plain": {"past": "◇", "current": "◆", "failure": "✗", "limit": "┆", "warn": "⚠", "gate": "⬡", "end": "END"},
+    "plain": {"past": "◇", "pass": "✓", "current": "◆", "failure": "✗", "limit": "┆", "warn": "⚠", "gate": "⬡", "end": "END"},
 }
 
 DECISION = {"accept": "green", "reject": "red"}
@@ -301,7 +301,8 @@ def vchain(wf: dict[str, Any], steps: list[tuple[str, Any]], now: datetime, g: d
             t.append(f" {nr['name'].ljust(pad)}  {dur(nr, now)}", "bold")
         else:
             style = style_of(nr)
-            t.append(f"{g['failure'] if style == 'red' else g['past']} {nr['name'].ljust(pad)}", style)
+            glyph = {"green": g["pass"], "red": g["failure"]}.get(style, g["past"])
+            t.append(f"{glyph} {nr['name'].ljust(pad)}", style)
             t.append("  " + dur(nr, now), "dim")
         return t
 
