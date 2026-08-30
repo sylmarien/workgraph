@@ -525,11 +525,14 @@ def section(title: str, body: list[Text]) -> list[Text]:
 def node_n1(ctx: Ctx, name: str) -> list[Text]:
     """Sections in the ticket's order."""
     s, e = ctx.starts[name], ctx.ends.get(name)
-    head = Text(display(s), "bold").append(f"  started {iso(parse(s['time']))}", DIM)
-    head.append(f"  ended {iso(parse(e['time']))}" if e else "  running", DIM)
-    head.append(f"  {duration(ctx, name)}", DIM)
+    # started and ended on their own lines, times aligned, for comparison.
+    head = [Text(display(s), "bold"), Text(f"started  {iso(parse(s['time']))}", DIM)]
+    if e:
+        head.append(Text(f"ended    {iso(parse(e['time']))}  {duration(ctx, name)}", DIM))
+    else:
+        head.append(Text(f"running  {duration(ctx, name)}", DIM))
     return [
-        head,
+        *head,
         Text(),
         *section("input", input_text(ctx, s)),
         *section("stdout", stream(ctx, name, "stdout")),
