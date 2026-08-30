@@ -58,6 +58,10 @@ _Avoid_: Execution, instance, job
 One entry of a node by a run, from its start to its outcome or failure. Named `<node>#<n>`, where `n` counts the node's node runs in the run, starting at 1 and never reset.
 _Avoid_: Visit, execution, attempt
 
+**Run record**:
+The files a run leaves under `.workgraph/run/`: the state, the journal, and every node run output. `run` wipes the previous run record; `resume` appends to it.
+_Avoid_: Logs, artifacts, history
+
 **Node run output**:
 The stdout and stderr the process of a node run writes. workgraph keeps them for inspection. A map node run and a gate node run have none.
 _Avoid_: Logs, transcript, capture

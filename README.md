@@ -59,7 +59,7 @@ Requires Python 3.12+. Agent nodes additionally require the `claude` CLI on
   [Cost budget](#cost-budget)).
 - `workgraph status` — report the run in the current directory. The first
   line is `no run in <dir>` (exit 1), `a run is in progress at node '<node>'`,
-  `the run reached END`, or `stopped at '<node>': <gate|failure|limit|budget>`.
+  `the run reached END`, or `stopped at '<node>': <gate|failure|escalation|budget>`.
   A stopped run then prints the stop message when the run recorded one, the
   gate question and the review material for a parked run, the spent time and
   each effective time limit, and the spent cost and the effective cost limit
@@ -76,8 +76,14 @@ resolution from execution:
 
 - `workgraph` resolves the workflow TOML and the agent definitions from the
   invocation directory.
-- Nodes execute in `<dir>`, and the run state (`run.json`, `run.lock`) is
-  stored there.
+- Nodes execute in `<dir>`, and the run record is stored there:
+  - `.workgraph/run/state.json`: the run state.
+  - `.workgraph/run/journal.jsonl`: the journal, one JSON event per line.
+  - `.workgraph/run/<node>#<n>.stdout` and `.stderr`: the output of every
+    command and agent node run, `n` counting the node's node runs from 1.
+
+  `run` wipes `.workgraph/run/`; `resume` appends to it.
+  `.workgraph/run.lock` exists while the run is live.
 - `resume` reads the state from `<dir>` and re-resolves the workflow from the
   invocation directory, so a run resumes from the directory it was started
   from.

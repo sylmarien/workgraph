@@ -170,6 +170,8 @@ def _validate_node(
 
     if name in RESERVED_NAMES:
         fail(f"'{name}' is reserved and cannot name a node")
+    if name.endswith("#"):
+        fail("a node name cannot end with '#'")
     if sum(kind in node for kind in KINDS) != 1:
         fail("declare exactly one of 'agent', 'command', 'map', or 'gate'")
     if "agent" not in node:
