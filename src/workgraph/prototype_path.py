@@ -6,12 +6,12 @@ The workflow gets a `ship` gate before `pr` so a park can be shown.
   A  chain of node runs in journal order (the #54 diamonds), wrapped to the terminal width
   B  the `viz` graph with the path marked (termaid)
   C  B plus one path line in journal order
-  D  A vertical: progress downward, fan-outs rightward; colored on a terminal, Nerd Font glyphs with --rich
+  D  A vertical: progress downward, fan-outs rightward; colored on a terminal
   E  B plus D
 
 Run from the repo root:
 
-  uv run python src/workgraph/prototype_path.py -v A|B|C|D|E -s fanout|limit|parked|running|rejected|escalated|failed|ended [--follow] [--ascii] [--rich]
+  uv run python src/workgraph/prototype_path.py -v A|B|C|D|E -s fanout|limit|parked|running|rejected|escalated|failed|ended [--follow] [--ascii]
 """
 
 import argparse
@@ -265,10 +265,9 @@ def chain(steps: list[tuple[str, Any]], now: datetime, width: int) -> str:
 
 # --- variant D: vertical chain ---------------------------------------------
 
-# Glyph sets: plain unicode, or Nerd Font (--rich).
+# Glyphs. A coded failure (command or map fail, or a failure) shows the x mark.
 GLYPHS = {
     "plain": {"past": "◇", "current": "◆", "failure": "✗", "limit": "┆", "warn": "⚠", "gate": "⬡", "end": "END"},
-    "nerd": {"past": "\uf058", "current": "\uf144", "failure": "\uf057", "limit": "\uf071", "warn": "\uf071", "gate": "\uf007", "end": "\uf11e END"},
 }
 
 DECISION = {"accept": "green", "reject": "red"}
@@ -301,8 +300,8 @@ def vchain(wf: dict[str, Any], steps: list[tuple[str, Any]], now: datetime, g: d
             t.append(g["current"], "bold" if pulse is None else shade(pulse))
             t.append(f" {nr['name'].ljust(pad)}  {dur(nr, now)}", "bold")
         else:
-            glyph = g["failure"] if nr["outcome"] == "failure" else g["past"]
-            t.append(f"{glyph} {nr['name'].ljust(pad)}", style_of(nr))
+            style = style_of(nr)
+            t.append(f"{g['failure'] if style == 'red' else g['past']} {nr['name'].ljust(pad)}", style)
             t.append("  " + dur(nr, now), "dim")
         return t
 
@@ -478,13 +477,12 @@ def main() -> None:
     p.add_argument("-s", "--scenario", choices=[*CUTS, *EXTRA, "ended"], default="running")
     p.add_argument("--follow", action="store_true", help="replay the journal, redrawing on every event")
     p.add_argument("--ascii", action="store_true")
-    p.add_argument("--rich", action="store_true", help="Nerd Font glyphs in D and E")
     p.add_argument("--mermaid", action="store_true", help="print the mermaid source of B")
     args = p.parse_args()
     wf = workflow_with_gate()
     events = cut(build_journal(wf), args.scenario)
     console = Console()
-    g = GLYPHS["nerd" if args.rich else "plain"]
+    g = GLYPHS["plain"]
     if args.mermaid:
         print(mermaid(wf, model(events), parse(events[-1]["time"]) + timedelta(seconds=12)))
         return
