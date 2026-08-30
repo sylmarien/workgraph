@@ -251,12 +251,12 @@ def display(e: dict[str, Any]) -> str:
     return f"{e['map']}/{e['node']}" if e.get("map") else e["node"]
 
 
-def clock(t: datetime) -> str:
-    return t.astimezone().strftime("%H:%M:%S")
+def iso(t: datetime) -> str:
+    """ISO 8601 in local time with the offset; the journal stores UTC."""
+    return t.astimezone().isoformat(timespec="seconds")
 
 
-def stamp(t: datetime) -> str:
-    return t.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+ISO_WIDTH = 25
 
 
 def duration(ctx: Ctx, name: str) -> str:
@@ -348,7 +348,7 @@ Row = tuple[dict[str, Any] | None, Text]
 def run_line(ctx: Ctx, with_time: bool) -> Text:
     e = ctx.events[0]
     text = Text(f'run: {e["workflow"]} "{e["input"]}"', "bold")
-    return text.append(f"  {stamp(parse(e['time']))}", DIM) if with_time else text
+    return text.append(f"  {iso(parse(e['time']))}", DIM) if with_time else text
 
 
 def journal_l2(ctx: Ctx) -> list[Row]:
@@ -357,16 +357,16 @@ def journal_l2(ctx: Ctx) -> list[Row]:
     gate = None
 
     def row(t: str, name: str, dur: str, tail: Text) -> Text:
-        line = Text(f"{t:8}  ", DIM)
+        line = Text(f"{t:{ISO_WIDTH}}  ", DIM)
         if name:
             line.append(f"{name:<{ctx.width}}  ").append(f"{dur:>6}  ", DIM)
         return line.append_text(tail)
 
     for i, e in enumerate(ctx.events[1:], 1):
-        t = clock(parse(e["time"]))
+        t = iso(parse(e["time"]))
         match e["event"]:
             case "end":
-                started = clock(parse(ctx.starts[e["node"]]["time"]))
+                started = iso(parse(ctx.starts[e["node"]]["time"]))
                 rows.append((e, row(started, display(e), duration(ctx, e["node"]), end_text(ctx, e))))
             case "limit":
                 rows.append((e, row(t, e["node"], "", Text(f"LIMIT → {e['target']}", "yellow"))))
@@ -380,7 +380,7 @@ def journal_l2(ctx: Ctx) -> list[Row]:
                 rows.append((e, row(t, "", "", stop_text(ctx, e, i))))
     for name, s in ctx.starts.items():
         if name not in ctx.ends:
-            rows.append((s, row(clock(parse(s["time"])), display(s), duration(ctx, name), Text("running", "bold"))))
+            rows.append((s, row(iso(parse(s["time"])), display(s), duration(ctx, name), Text("running", "bold"))))
     live = live_text(ctx)
     if live:
         rows.append((None, row("", "", "", live)))
@@ -390,12 +390,14 @@ def journal_l2(ctx: Ctx) -> list[Row]:
 def journal_l3(ctx: Ctx) -> list[Row]:
     """One line per journal event, in the run terminal's `<node>: <outcome>` format.
 
-    Every journal line carries the event's time; the live line is transient and has none.
+    Every journal line starts with the event's time; the live line is transient and has none.
     """
-    rows: list[Row] = [(ctx.events[0], run_line(ctx, True))]
+    rows: list[Row] = []
     gate = None
-    for i, e in enumerate(ctx.events[1:], 1):
+    for i, e in enumerate(ctx.events):
         match e["event"]:
+            case "run":
+                line = Text(f'run: {e["workflow"]} "{e["input"]}"', "bold")
             case "start":
                 line = Text(f"{display(e)}: started", DIM)
             case "end":
@@ -410,10 +412,10 @@ def journal_l3(ctx: Ctx) -> list[Row]:
             case _:
                 gate = e["node"]
                 line = stop_text(ctx, e, i)
-        rows.append((e, Text(f"{clock(parse(e['time']))}  ", DIM).append_text(line)))
+        rows.append((e, Text(f"{iso(parse(e['time']))}  ", DIM).append_text(line)))
     live = live_text(ctx)
     if live:
-        rows.append((None, Text(" " * 10).append_text(live)))
+        rows.append((None, Text(" " * (ISO_WIDTH + 2)).append_text(live)))
     return rows
 
 
@@ -523,8 +525,8 @@ def section(title: str, body: list[Text]) -> list[Text]:
 def node_n1(ctx: Ctx, name: str) -> list[Text]:
     """Sections in the ticket's order."""
     s, e = ctx.starts[name], ctx.ends.get(name)
-    head = Text(display(s), "bold").append(f"  started {stamp(parse(s['time']))}", DIM)
-    head.append(f"  ended {stamp(parse(e['time']))}" if e else "  running", DIM)
+    head = Text(display(s), "bold").append(f"  started {iso(parse(s['time']))}", DIM)
+    head.append(f"  ended {iso(parse(e['time']))}" if e else "  running", DIM)
     head.append(f"  {duration(ctx, name)}", DIM)
     return [
         head,
@@ -555,8 +557,8 @@ def node_n2(ctx: Ctx, name: str) -> list[Text]:
     lines = [
         kv("node run", Text(display(s), "bold")),
         kv("node", f"{node_of(name)} ({kind} {what})"),
-        kv("started", stamp(parse(s["time"]))),
-        kv("ended", f"{stamp(parse(e['time']))}  ({duration(ctx, name)})") if e else kv("running", duration(ctx, name)),
+        kv("started", iso(parse(s["time"]))),
+        kv("ended", f"{iso(parse(e['time']))}  ({duration(ctx, name)})") if e else kv("running", duration(ctx, name)),
     ]
     outcome = outcome_lines(ctx, name)
     if e and e["outcome"] is None:
