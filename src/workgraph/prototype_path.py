@@ -454,6 +454,10 @@ def path_line(steps: list[tuple[str, Any]], now: datetime, width: int) -> str:
 
 def render(wf: dict[str, Any], events: list[dict[str, Any]], now: datetime, variant: str, use_ascii: bool, console: Console, g: dict[str, str] = GLYPHS["plain"], pulse: float | None = None) -> None:
     steps = model(events)
+    line = status(wf, steps, now)
+    style = {"p": "bold yellow", "r": "bold"}.get(line[0], "green" if line == "stopped: end" else "red" if "failure" in line else "bold yellow")
+    console.print(Text('run: dev "#62" · ').append(line, style))
+    console.print()
     if variant == "A":
         console.print(chain(steps, now, console.width), highlight=False, markup=False)
     elif variant == "D":
@@ -466,10 +470,6 @@ def render(wf: dict[str, Any], events: list[dict[str, Any]], now: datetime, vari
         elif variant == "E":
             console.print()
             console.print(vchain(wf, steps, now, g, pulse))
-    console.print()
-    line = status(wf, steps, now)
-    style = {"p": "bold yellow", "r": "bold"}.get(line[0], "green" if line == "stopped: end" else "red" if "failure" in line else "bold yellow")
-    console.print(Text('run: dev "#62" · ').append(line, style))
 
 
 def main() -> None:
