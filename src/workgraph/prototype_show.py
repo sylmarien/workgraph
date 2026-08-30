@@ -7,20 +7,20 @@ the command node, stream-json lines for agent nodes.
   journal [-v L1|L2|L3] [--graph] [--with-nodes [-w W1|W2]] [--raw] [-s scenario]
     L1  the #69 chain is the plain list; --graph and --with-nodes have no line form
     L2  one row per node run, in end order: start time, name, duration, outcome → target
-    L3  one line per journal event, in the run terminal's `<node>: <outcome>` format
+    L3  one line per journal event, timestamped, in the run terminal's `<node>: <outcome>` format (default)
     W1  origin prefix `<node run> │ ` (stderr `<node run> ! `), aligned; workgraph lines `workgraph# │ `
-    W2  origin prefix `[<node run>] ` (stderr `[<node run> stderr] `); workgraph lines `[workgraph#] `
+    W2  origin prefix `[<node run>] ` (stderr `[<node run> stderr] `); workgraph lines `[workgraph#] ` (default)
   node <node-run> [-v N1|N2|N3] [--raw] [-s scenario]
-    N1  sections in ticket order: input, stdout, stderr, outcome, handoff
+    N1  sections in ticket order: input, stdout, stderr, outcome, handoff (default)
     N2  a key: value header with everything the journal knows, then the streams
     N3  the node run's journal events as JSON, then the files as `==> file <==` blocks
   --raw  agent stdout as the stream-json lines; the default renders text and tool calls
 
-Run from the repo root:
+The defaults are the chosen variants. Run from the repo root:
 
-  uv run python src/workgraph/prototype_show.py journal -v L2 -s ended
-  uv run python src/workgraph/prototype_show.py journal -v L3 --with-nodes -w W1 -s fanout
-  uv run python src/workgraph/prototype_show.py node implement#2 -v N1 -s failed
+  uv run python src/workgraph/prototype_show.py journal -s ended
+  uv run python src/workgraph/prototype_show.py journal --with-nodes -s fanout
+  uv run python src/workgraph/prototype_show.py node implement#2 -s failed
 """
 
 import argparse
@@ -52,6 +52,8 @@ from workgraph.workflow import END
 # Origin of workgraph's own lines under --with-nodes. No node name can end with '#'.
 WORKGRAPH = "workgraph#"
 DECISION = {"accept": "green", "reject": "red"}
+# Secondary text. The terminal's dim attribute reads too dark; a fixed grey instead.
+DIM = "grey66"
 SID = "3f2a9c1e-7b4d-4e0a-9f1c-2d8e5a6b7c0d"
 
 HANDOFFS = {
@@ -293,7 +295,7 @@ def stop_text(ctx: Ctx, e: dict[str, Any], upto: int) -> Text:
             text = Text(f"failure at {e['node']}", "red")
         case _:
             text = Text(f"{e['reason']} at {e['node']}", "bold yellow")
-    return text.append(f" · spent {spent(model(ctx.events[: upto + 1]), t)}", "dim")
+    return text.append(f" · spent {spent(model(ctx.events[: upto + 1]), t)}", DIM)
 
 
 def live_text(ctx: Ctx) -> Text | None:
@@ -301,7 +303,7 @@ def live_text(ctx: Ctx) -> Text | None:
     if ctx.events[-1]["event"] == "stop":
         return None
     steps = model(ctx.events)
-    return Text(status(ctx.wf, steps, ctx.now), "bold").append(f" · spent {spent(steps, ctx.now)}", "dim")
+    return Text(status(ctx.wf, steps, ctx.now), "bold").append(f" · spent {spent(steps, ctx.now)}", DIM)
 
 
 def tool_summary(inp: dict[str, Any]) -> str:
@@ -329,10 +331,10 @@ def transcript(stdout: str) -> list[Text]:
 
 def stream(ctx: Ctx, name: str, which: str) -> list[Text]:
     if name not in ctx.out:
-        return [Text("(none: map node)", "dim")]
+        return [Text("(none: map node)", DIM)]
     text = ctx.out[name][0 if which == "stdout" else 1]
     if not text:
-        return [Text("(empty)", "dim")]
+        return [Text("(empty)", DIM)]
     if which == "stdout" and "agent" in ctx.nodes[node_of(name)] and not ctx.raw:
         return transcript(text)
     return [Text(line) for line in text.splitlines()]
@@ -346,7 +348,7 @@ Row = tuple[dict[str, Any] | None, Text]
 def run_line(ctx: Ctx, with_time: bool) -> Text:
     e = ctx.events[0]
     text = Text(f'run: {e["workflow"]} "{e["input"]}"', "bold")
-    return text.append(f"  {stamp(parse(e['time']))}", "dim") if with_time else text
+    return text.append(f"  {stamp(parse(e['time']))}", DIM) if with_time else text
 
 
 def journal_l2(ctx: Ctx) -> list[Row]:
@@ -355,9 +357,9 @@ def journal_l2(ctx: Ctx) -> list[Row]:
     gate = None
 
     def row(t: str, name: str, dur: str, tail: Text) -> Text:
-        line = Text(f"{t:8}  ", "dim")
+        line = Text(f"{t:8}  ", DIM)
         if name:
-            line.append(f"{name:<{ctx.width}}  ").append(f"{dur:>6}  ", "dim")
+            line.append(f"{name:<{ctx.width}}  ").append(f"{dur:>6}  ", DIM)
         return line.append_text(tail)
 
     for i, e in enumerate(ctx.events[1:], 1):
@@ -372,7 +374,7 @@ def journal_l2(ctx: Ctx) -> list[Row]:
                 target = ctx.nodes[gate]["transitions"][e["decision"]]
                 rows.append((e, row(t, gate, "", Text(f"{e['decision']} → {target}", DECISION[e["decision"]]))))
             case "resume":
-                rows.append((e, row(t, "", "", Text("resumed", "dim"))))
+                rows.append((e, row(t, "", "", Text("resumed", DIM))))
             case "stop":
                 gate = e["node"]
                 rows.append((e, row(t, "", "", stop_text(ctx, e, i))))
@@ -386,36 +388,40 @@ def journal_l2(ctx: Ctx) -> list[Row]:
 
 
 def journal_l3(ctx: Ctx) -> list[Row]:
-    """One line per journal event, in the run terminal's `<node>: <outcome>` format."""
-    rows: list[Row] = [(ctx.events[0], run_line(ctx, False))]
+    """One line per journal event, in the run terminal's `<node>: <outcome>` format.
+
+    Every journal line carries the event's time; the live line is transient and has none.
+    """
+    rows: list[Row] = [(ctx.events[0], run_line(ctx, True))]
     gate = None
     for i, e in enumerate(ctx.events[1:], 1):
         match e["event"]:
             case "start":
-                rows.append((e, Text(f"{display(e)}: started", "dim")))
+                line = Text(f"{display(e)}: started", DIM)
             case "end":
                 line = Text(f"{display(e)}: ").append_text(end_text(ctx, e))
-                rows.append((e, line.append(f"  {duration(ctx, e['node'])}", "dim")))
+                line.append(f"  {duration(ctx, e['node'])}", DIM)
             case "limit":
-                rows.append((e, Text(f"{e['node']}: LIMIT → {e['target']}", "yellow")))
+                line = Text(f"{e['node']}: LIMIT → {e['target']}", "yellow")
             case "resume" if e.get("decision"):
-                rows.append((e, Text(f"{gate}: {e['decision']}", DECISION[e["decision"]])))
+                line = Text(f"{gate}: {e['decision']}", DECISION[e["decision"]])
             case "resume":
-                rows.append((e, Text("resumed", "dim")))
-            case "stop":
+                line = Text("resumed", DIM)
+            case _:
                 gate = e["node"]
-                rows.append((e, stop_text(ctx, e, i)))
+                line = stop_text(ctx, e, i)
+        rows.append((e, Text(f"{clock(parse(e['time']))}  ", DIM).append_text(line)))
     live = live_text(ctx)
     if live:
-        rows.append((None, live))
+        rows.append((None, Text(" " * 10).append_text(live)))
     return rows
 
 
 def prefix(ctx: Ctx, w: str, origin: str, stderr: bool = False) -> Text:
     if w == "W1":
         width = max(ctx.width, len(WORKGRAPH))
-        return Text(f"{origin:<{width}} {'!' if stderr else '│'} ", "red" if stderr else "dim")
-    return Text(f"[{origin}{' stderr' if stderr else ''}] ", "red" if stderr else "dim")
+        return Text(f"{origin:<{width}} {'!' if stderr else '│'} ", "red" if stderr else DIM)
+    return Text(f"[{origin}{' stderr' if stderr else ''}] ", "red" if stderr else DIM)
 
 
 def block(ctx: Ctx, name: str, w: str) -> list[Text]:
@@ -499,27 +505,27 @@ def outcome_lines(ctx: Ctx, name: str) -> list[Text]:
         runs = [c for c in ctx.ends if node_of(c) == child and ctx.ends[c]["map"] == node_of(name)]
         run = runs[int(name.rsplit("#", 1)[1]) - 1]
         line = Text(f"  {display(ctx.ends[run])}  ").append_text(end_text(ctx, ctx.ends[run]))
-        lines.append(line.append(f"  {duration(ctx, run)}", "dim"))
+        lines.append(line.append(f"  {duration(ctx, run)}", DIM))
     return lines
 
 
 def handoff_lines(ctx: Ctx, name: str) -> list[Text]:
     e = ctx.ends.get(name)
     if e is None or not e["handoff"]:
-        return [Text("(none)", "dim")]
+        return [Text("(none)", DIM)]
     return [Text(line) for line in e["handoff"].splitlines()]
 
 
 def section(title: str, body: list[Text]) -> list[Text]:
-    return [Text(f"── {title} ──", "dim"), *body, Text()]
+    return [Text(f"── {title} ──", DIM), *body, Text()]
 
 
 def node_n1(ctx: Ctx, name: str) -> list[Text]:
     """Sections in the ticket's order."""
     s, e = ctx.starts[name], ctx.ends.get(name)
-    head = Text(display(s), "bold").append(f"  started {stamp(parse(s['time']))}", "dim")
-    head.append(f"  ended {stamp(parse(e['time']))}" if e else "  running", "dim")
-    head.append(f"  {duration(ctx, name)}", "dim")
+    head = Text(display(s), "bold").append(f"  started {stamp(parse(s['time']))}", DIM)
+    head.append(f"  ended {stamp(parse(e['time']))}" if e else "  running", DIM)
+    head.append(f"  {duration(ctx, name)}", DIM)
     return [
         head,
         Text(),
@@ -540,8 +546,8 @@ def node_n2(ctx: Ctx, name: str) -> list[Text]:
 
     def kv(key: str, value: Text | str) -> Text:
         if not value:
-            return Text(f"{key}:", "dim")
-        return Text(f"{key + ':':<10}", "dim").append_text(Text(value) if isinstance(value, str) else value)
+            return Text(f"{key}:", DIM)
+        return Text(f"{key + ':':<10}", DIM).append_text(Text(value) if isinstance(value, str) else value)
 
     def indented(lines: list[Text]) -> list[Text]:
         return [Text("  ").append_text(line) for line in lines]
@@ -594,10 +600,10 @@ def main() -> None:
     common.add_argument("--raw", action="store_true", help="agent stdout as stream-json lines")
     sub = p.add_subparsers(dest="command", required=True)
     j = sub.add_parser("journal", parents=[common])
-    j.add_argument("-v", "--variant", choices=["L1", "L2", "L3"], default="L2")
+    j.add_argument("-v", "--variant", choices=["L1", "L2", "L3"], default="L3")
     j.add_argument("--graph", action="store_true")
     j.add_argument("--with-nodes", action="store_true")
-    j.add_argument("-w", choices=["W1", "W2"], default="W1")
+    j.add_argument("-w", choices=["W1", "W2"], default="W2")
     n = sub.add_parser("node", parents=[common])
     n.add_argument("node_run")
     n.add_argument("-v", "--variant", choices=["N1", "N2", "N3"], default="N1")
