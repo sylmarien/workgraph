@@ -25,7 +25,7 @@ from tests.conftest import (
     write_agent,
 )
 from workgraph.cli import main
-from workgraph.run import JOURNAL_FILE, RUN_DIR
+from workgraph.run import RUN_DIR, read_journal
 
 TIME = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+00:00")
 END = {"handoff": None, "map": None, "cost": 0, "spent_time": SPENT, "spent_cost": 0}
@@ -68,7 +68,7 @@ reject = "checks"
 
 def journal() -> list[dict[str, object]]:
     """Read the journal events; check and drop each time stamp."""
-    events = [json.loads(line) for line in JOURNAL_FILE.read_text().splitlines()]
+    events = read_journal(Path())
     for event in events:
         assert TIME.fullmatch(str(event.pop("time")))
     return events
@@ -90,7 +90,7 @@ def test_run_journals_every_node_run_and_the_stop(
     project, _ = dirs
     write(project, "loop", LOOP)
     assert main(["run", "loop", "issue #5"]) == 0
-    assert capsys.readouterr().out == "check: fail\ncheck: pass\n"
+    assert capsys.readouterr().out == "check: fail\ncheck: pass\nEND · spent 0s\n"
     assert journal() == [
         {"event": "run", "workflow": "loop", "input": "issue #5"},
         {"event": "start", "node": "check#1", "handoff": None},
@@ -108,7 +108,7 @@ def test_command_node_runs_leave_both_output_files(
     project, _ = dirs
     write(project, "echo", MINIMAL.replace('"true"', "\"sh -c 'echo out; echo err >&2'\""))
     assert main(["run", "echo", "input"]) == 0
-    assert capfd.readouterr() == ("check: pass\n", "")
+    assert capfd.readouterr() == ("check: pass\nEND · spent 0s\n", "")
     assert output("check#1", "stdout") == "out\n"
     assert output("check#1", "stderr") == "err\n"
 
@@ -125,7 +125,7 @@ def test_agent_node_runs_keep_the_raw_stream_json(
         f"#!/bin/sh\nprintf '%s\\0' \"$@\" '===' >> claude-calls.txt\n{script}"
     )
     assert main(["run", "agents", "issue #9"]) == 0
-    assert capfd.readouterr() == ("plan: done\n", "")
+    assert capfd.readouterr() == ("plan: done\nEND · spent 0s · $0.50\n", "")
     assert output("plan#1", "stdout") == "\n".join(lines) + "\n"
     assert output("plan#1", "stderr") == "warning\n"
     [args] = spawn_args(project)

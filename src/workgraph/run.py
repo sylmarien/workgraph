@@ -13,12 +13,18 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from rich.console import Console
+from rich.text import Text
+
 from workgraph.workflow import END, LIMIT
 
 RUN_DIR = Path(".workgraph") / "run"
 STATE_FILE = RUN_DIR / "state.json"
 JOURNAL_FILE = RUN_DIR / "journal.jsonl"
 LOCK_FILE = Path(".workgraph") / "run.lock"
+
+# Secondary text style.
+GREY = "grey66"
 
 _JOURNAL_LOCK = threading.Lock()
 
@@ -60,11 +66,12 @@ def run_workflow(name: str, workflow: dict[str, Any], run_input: str, directory:
     """Run the workflow from its start node until END or a stop.
 
     Runs the nodes in directory. Writes the run record under RUN_DIR:
-    - STATE_FILE after each node run
+    - STATE_FILE at the start and after each node run
     - JOURNAL_FILE as events happen
     - one output file per stream per node run
-    A run wipes the previous run record. Prints one progress line per node run.
-    Holds LOCK_FILE in directory for the whole run; one run per directory.
+    A run wipes the previous run record. Prints one progress line per node run
+    and ends on the stop line. Holds LOCK_FILE in directory for the whole run;
+    one run per directory.
     """
     state: dict[str, Any] = {
         "workflow": name,
@@ -98,12 +105,73 @@ def load_state(directory: Path) -> dict[str, Any]:
     return state
 
 
-def park_report(question: str, handoff: Sequence[str] | None) -> str:
-    """Format the gate question and the review material a gate shows the human."""
+def park_report(handoff: Sequence[str] | None) -> str:
+    """Format the review material a gate shows the human."""
     if handoff is None:
-        return f"{question}\nNo review material."
+        return "No review material."
     source, text = handoff
-    return f"{question}\nReview material from {source}:\n{text}"
+    return f"Review material from {source}:\n{text}"
+
+
+def _format_duration(seconds: float) -> str:
+    """Format whole seconds as 5s, 4m05s, or 2h30m."""
+    whole = int(seconds)
+    if whole < 60:
+        return f"{whole}s"
+    if whole < 3600:
+        return f"{whole // 60}m{whole % 60:02d}s"
+    return f"{whole // 3600}h{whole % 3600 // 60:02d}m"
+
+
+def _spent_text(state: dict[str, Any]) -> str:
+    """Format the spent amounts: ` · spent <t>`, then ` · $<c>` when the cost is non-zero."""
+    text = f" · spent {_format_duration(state.get('spent_time', 0))}"
+    cost = round(state.get("spent_cost", 0), 2)
+    return text + (f" · ${cost:.2f}" if cost else "")
+
+
+def stop_line(state: dict[str, Any], reason: str, question: str | None = None) -> Text:
+    """Format the stop as one line: END, or `<reason> at <node>`, then the spent amounts.
+
+    question is the question of the gate node a parked run stopped at.
+    """
+    node = state["node"]
+    match reason:
+        case "end":
+            head, style = END, "green"
+        case "gate":
+            head, style = f"parked at {node}: {question}", "bold yellow"
+        case _:
+            head, style = f"{reason} at {node}", "red" if reason == "failure" else "bold yellow"
+    return Text(head, style).append(_spent_text(state), GREY)
+
+
+def running_line(state: dict[str, Any], journal: list[dict[str, Any]]) -> Text:
+    """Format the running line of a run in progress from the journal's last start event.
+
+    `running <node run> <elapsed>… · spent <t>`; a fanned-out node run reads `<map>/<node run>`.
+    Before the first node run, the line names the node the run enters, timed from the
+    run or resume event.
+    """
+    event = next(e for e in reversed(journal) if e["event"] in ("start", "run", "resume"))
+    name = event.get("node", state["node"])
+    if event.get("map"):
+        name = f"{event['map']}/{name}"
+    elapsed = datetime.now(UTC) - datetime.fromisoformat(event["time"])
+    text = Text(f"running {name} {_format_duration(elapsed.total_seconds())}…", "bold")
+    return text.append(_spent_text(state), GREY)
+
+
+def read_journal(directory: Path) -> list[dict[str, Any]]:
+    """Read the journal events; a trailing partial line is dropped, a missing journal is empty."""
+    path = directory / JOURNAL_FILE
+    lines = path.read_text().split("\n")[:-1] if path.exists() else []
+    return [json.loads(line) for line in lines]
+
+
+def echo(text: Text) -> None:
+    """Print one styled line: colors on a terminal, plain when piped."""
+    Console(highlight=False).print(text, soft_wrap=True)
 
 
 def time_limits(workflow: dict[str, Any], state: dict[str, Any]) -> dict[str, float]:
@@ -229,28 +297,31 @@ def _run_nodes(
     state.setdefault("spent_time", 0.0)
     state.setdefault("spent_cost", 0.0)
     state.setdefault("node_runs", {})
+    _write_state(state, directory, current, handoff)
     diverted: set[str] = set()
     while current != END:
         node = nodes[current]
         if "gate" in node:
-            _write_state(state, directory, current, handoff, stopped="gate")
-            _journal(directory, "stop", reason="gate", node=current)
-            print(f"{current}: parked\n{park_report(node['gate'], handoff)}", flush=True)
+            print(f"{current}: parked", flush=True)
+            _stop(state, directory, current, handoff, "gate", question=node["gate"])
+            print(park_report(handoff), flush=True)
             raise Park
         node_limits = node.get("limits", {})
         limit = node_limits.get("visits")
         if not grace and limit is not None and visits.get(current, 0) >= limit:
             if LIMIT not in node["transitions"]:
-                error = Escalation(
+                error: Exception = Escalation(
                     f"node '{current}' reached its visit limit of {limit} and has no LIMIT transition"
                 )
-                raise _stop(error, state, directory, current, handoff, "escalation")
+                _stop(state, directory, current, handoff, "escalation", error)
+                raise error
             if current in diverted:
                 error = Escalation(
                     f"node '{current}' reached its visit limit of {limit}"
                     " and its LIMIT transitions loop without running a node"
                 )
-                raise _stop(error, state, directory, current, handoff, "escalation")
+                _stop(state, directory, current, handoff, "escalation", error)
+                raise error
             diverted.add(current)
             _journal(directory, "limit", node=current, target=node["transitions"][LIMIT])
             stop_node = current
@@ -261,12 +332,16 @@ def _run_nodes(
         for kind in ("hard", "soft"):
             if kind in limits and spent >= limits[kind]:
                 print(f"{current}: budget", flush=True)
-                reason = f"node '{current}': {kind} time limit of {limits[kind]:g} s reached"
-                raise _stop(BudgetStop(reason), state, directory, current, handoff, "budget")
+                error = BudgetStop(
+                    f"node '{current}': {kind} time limit of {limits[kind]:g} s reached"
+                )
+                _stop(state, directory, current, handoff, "budget", error)
+                raise error
         if cost is not None and state["spent_cost"] >= cost:
             print(f"{current}: budget", flush=True)
-            reason = f"node '{current}': cost limit of {cost:g} USD reached"
-            raise _stop(BudgetStop(reason), state, directory, current, handoff, "budget")
+            error = BudgetStop(f"node '{current}': cost limit of {cost:g} USD reached")
+            _stop(state, directory, current, handoff, "budget", error)
+            raise error
         if grace:
             grace = False
         else:
@@ -288,12 +363,17 @@ def _run_nodes(
                 outcome, handoff_text, node_cost = _run_command(
                     node_run, node, directory, hard, spent
                 )
+        except KeyboardInterrupt:
+            # The run record already names the node: no end, no stop.
+            echo(stop_line(state, "interrupted"))
+            raise
         except NodeFailure as error:
             state["spent_time"] += time.monotonic() - started
             state["spent_cost"] += error.cost
             print(f"{current}: failure", flush=True)
             _end(directory, node_run, {"failure": str(error)}, None, error.cost, state=state)
-            raise _stop(error, state, directory, current, handoff, "failure") from None
+            _stop(state, directory, current, handoff, "failure", error)
+            raise error from None
         state["spent_time"] += time.monotonic() - started
         state["spent_cost"] += node_cost
         if "agent" in node:
@@ -311,25 +391,33 @@ def _run_nodes(
             handoff = None
         elif handoff_text is not None:
             handoff = (current, handoff_text)
-        _write_state(state, directory, current, handoff)
+        # The state names the node the run enters, so an interrupted run resumes there.
+        _write_state(state, directory, target, handoff)
         stop_node = current
         current = target
-    _write_state(state, directory, END, None)
-    _journal(directory, "stop", reason="end", node=stop_node)
+    _stop(state, directory, stop_node, None, "end")
 
 
 def _stop(
-    error: Exception,
     state: dict[str, Any],
     directory: Path,
     node: str,
     handoff: tuple[str, str] | None,
-    stopped: str,
-) -> Exception:
-    """Write the stop into the state and the journal; return the error for the caller to raise."""
-    _write_state(state, directory, node, handoff, stopped=stopped, reason=str(error))
-    _journal(directory, "stop", reason=stopped, node=node)
-    return error
+    reason: str,
+    error: Exception | None = None,
+    question: str | None = None,
+) -> None:
+    """Record the stop in the state and the journal, then print the stop line.
+
+    node is the node the run stops at; a run that reaches END names the last node run's node.
+    """
+    if reason == "end":
+        _write_state(state, directory, END, None)
+    else:
+        message = None if error is None else str(error)
+        _write_state(state, directory, node, handoff, stopped=reason, reason=message)
+    _journal(directory, "stop", reason=reason, node=node)
+    echo(stop_line(state, reason, question))
 
 
 def _journal(directory: Path, event: str, **fields: Any) -> None:

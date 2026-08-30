@@ -74,9 +74,21 @@ _Avoid_: Log, history, trace
 Keeping an inspection view current while the run writes. A follow ends when the run stops or the followed node run ends.
 _Avoid_: Tail, watch, attach
 
+**In progress**:
+A run whose process is running. The lock file exists while the run is in progress.
+_Avoid_: Live, active, alive
+
 **Interrupted**:
 A run whose process exited between events, leaving no stop. It resumes at the node it was entering.
 _Avoid_: Crashed, killed, aborted
+
+**Stop line**:
+The one line that reports a stop: `END`, or the stop reason and the node, then the spent amounts. `run` and `resume` end on it; `status` prints it first.
+_Avoid_: Summary, footer, banner
+
+**Running line**:
+The first line `status` prints for a run in progress: the node run in progress and its elapsed time, then the spent amounts.
+_Avoid_: Progress bar, spinner, live line
 
 **Failure**:
 A node run ending without an outcome; the run stops.
@@ -117,7 +129,7 @@ The spent time past which a run stops before entering its next node. The node ru
 _Avoid_: Warning threshold, grace limit
 
 **Hard limit**:
-The spent time at which a run stops immediately, interrupting the node run in progress. The interrupted node run is a failure.
+The spent time at which a run stops immediately, ending the node run in progress. That node run is a failure.
 _Avoid_: Timeout, kill limit
 
 **Spent time**:

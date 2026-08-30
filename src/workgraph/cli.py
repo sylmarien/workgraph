@@ -20,11 +20,15 @@ from workgraph.run import (
     Park,
     RunInProgress,
     cost_limit,
+    echo,
     load_state,
     park_report,
+    read_journal,
     read_state,
     resume_run,
     run_workflow,
+    running_line,
+    stop_line,
     time_limits,
 )
 from workgraph.workflow import (
@@ -177,26 +181,29 @@ def _status(args: argparse.Namespace) -> int:
         state = read_state(args.directory)
         if state is None:
             raise NothingToResume(f"no run in {args.directory}")
-        node = state["node"]
+        journal = read_journal(args.directory)
         if (args.directory / LOCK_FILE).exists():
-            print(f"a run is in progress at node '{node}'")
-        elif node == END:
-            print("the run reached END")
-        else:
-            stopped = state.get("stopped", "interrupted")
-            print(f"stopped at '{node}': {stopped}")
-            if "reason" in state:
-                print(state["reason"])
-            workflow = load_workflow(state["workflow"])
-            if stopped == "gate":
-                print(park_report(workflow["nodes"][node]["gate"], state.get("handoff")))
-            print(f"spent time: {state.get('spent_time', 0):.0f} s")
-            for kind, limit in time_limits(workflow, state).items():
-                print(f"{kind} limit: {limit:g} s")
-            cost = cost_limit(workflow, state)
-            if cost is not None:
-                print(f"spent cost: {state.get('spent_cost', 0):.2f} USD")
-                print(f"cost limit: {cost:g} USD")
+            echo(running_line(state, journal))
+            return
+        if state["node"] == END:
+            echo(stop_line(state, "end"))
+            return
+        workflow = load_workflow(state["workflow"])
+        last = journal[-1] if journal else {}
+        reason = last["reason"] if last.get("event") == "stop" else "interrupted"
+        question = workflow["nodes"][state["node"]].get("gate")
+        echo(stop_line(state, reason, question))
+        if "reason" in state:
+            print(state["reason"])
+        if reason == "gate":
+            print(park_report(state.get("handoff")))
+        print(f"spent time: {state.get('spent_time', 0):.0f} s")
+        for kind, limit in time_limits(workflow, state).items():
+            print(f"{kind} limit: {limit:g} s")
+        cost = cost_limit(workflow, state)
+        if cost is not None:
+            print(f"spent cost: {state.get('spent_cost', 0):.2f} USD")
+            print(f"cost limit: {cost:g} USD")
 
     return _report(action)
 
@@ -218,6 +225,8 @@ def _report(action: Callable[[], None]) -> int:
     except BudgetStop as error:
         print(error, file=sys.stderr)
         return 5
+    except KeyboardInterrupt:
+        return 130
     return 0
 
 

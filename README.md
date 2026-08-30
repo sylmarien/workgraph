@@ -57,14 +57,20 @@ Requires Python 3.12+. Agent nodes additionally require the `claude` CLI on
   take it. `--add-time <duration>` grants the run more time (see
   [Time budget](#time-budget)); `--add-cost <usd>` grants it more cost (see
   [Cost budget](#cost-budget)).
-- `workgraph status` — report the run in the current directory. The first
-  line is `no run in <dir>` (exit 1), `a run is in progress at node '<node>'`,
-  `the run reached END`, or `stopped at '<node>': <gate|failure|escalation|budget>`.
-  A stopped run then prints the stop message when the run recorded one, the
-  gate question and the review material for a parked run, the spent time and
-  each effective time limit, and the spent cost and the effective cost limit
-  when the workflow declares one. A run interrupted between node runs
-  reports `interrupted` in place of the stop.
+- `workgraph status` — report the run in the current directory. Without a
+  run: `no run in <dir>` on stderr, exit 1. The first line is one of:
+  - the stop line (see below) when the journal ends on a stop;
+  - `running <node run> <elapsed>…` with the spent suffix of the stop line
+    while the run is in progress; a fanned-out node run reads
+    `<map>/<node run>`;
+  - `interrupted at <node> · …` when there is no lock file and no stop.
+
+  A stopped or interrupted run then prints:
+  - the stop message when the run recorded one;
+  - the review material for a parked run;
+  - the spent time and each effective time limit;
+  - the spent cost and the effective cost limit when the workflow declares
+    one.
 - `workgraph viz <workflow>` — print the workflow graph. `--unicode`
   (default), `--ascii`, or `--mermaid` for the mermaid source. The unicode and
   ascii styles widen the diagram to the terminal width. `--theme <name>` picks
@@ -83,7 +89,7 @@ resolution from execution:
     command and agent node run, `n` counting the node's node runs from 1.
 
   `run` wipes `.workgraph/run/`; `resume` appends to it.
-  `.workgraph/run.lock` exists while the run is live.
+  `.workgraph/run.lock` exists while the run is in progress.
 - `resume` reads the state from `<dir>` and re-resolves the workflow from the
   invocation directory, so a run resumes from the directory it was started
   from.
@@ -94,7 +100,14 @@ can therefore run one directory's workflows in another directory.
 
 A run prints one line per node run: `<node>: <outcome>`, or `<node>: failure`.
 A fanned-out node prints as `<map>/<node>: <outcome>`, in completion order.
-Exit codes:
+The output ends on the stop line:
+
+- `END`, `parked at <gate>: <question>`, `failure at <node>`,
+  `escalation at <node>`, `budget at <node>`, or `interrupted at <node>`;
+- then ` · spent <t>`;
+- then ` · $<c>` when the spent cost is non-zero.
+
+The line is colored on a terminal and plain when piped. Exit codes:
 
 - `0` — the run reached `END`.
 - `1` — usage error, invalid workflow, a run already in progress, or nothing
@@ -103,10 +116,13 @@ Exit codes:
   node and the failure kind.
 - `3` — escalation: a node hit its visit limit and has no `LIMIT` transition.
 - `4` — park: a gate node waits for a decision. The output is the progress
-  line `<gate>: parked`, the gate question, then the review material.
+  line `<gate>: parked`, the stop line with the gate question, then the
+  review material.
 - `5` — budget stop: the spent time or the spent cost reached a limit of a
-  budget. The output is the progress line `<node>: budget`; the error names
-  the limit.
+  budget. The output is the progress line `<node>: budget` and the stop
+  line; the error names the limit.
+- `130` — interrupted: Ctrl+C during a node run. The run record keeps the
+  node; `resume` enters it.
 
 `workgraph resume` restarts a stopped run; a run that reached `END` cannot
 be resumed. What the resume does depends on the stop:
@@ -183,7 +199,7 @@ A workflow may bound the wall-clock time a run spends in node runs:
 ```toml
 [budget]
 time_soft = "30m"            # soft limit: stop before the next node
-time_hard = 2700             # hard limit: interrupt the node run in progress
+time_hard = 2700             # hard limit: kill the node run in progress
 ```
 
 - A duration is a bare number of seconds, or a string of a number with the
@@ -201,10 +217,10 @@ time_hard = 2700             # hard limit: interrupt the node run in progress
   enters that node as a grace entry.
 - Hard limit: workgraph kills a node run when the spent time reaches the
   hard limit; each fanned-out node gets the time left at the start of the
-  fan-out. An interrupted node run is a failure (exit 2,
+  fan-out. A killed node run is a failure (exit 2,
   `stopped = "failure"`) whose message names the hard limit.
-  `resume --add-time <duration>` re-enters it as a grace entry. An
-  interrupted fanned-out node counts as not passing.
+  `resume --add-time <duration>` re-enters it as a grace entry. A
+  killed fanned-out node counts as not passing.
 - Every failure, escalation, and budget stop stores its message in the run
   state as `reason`; `workgraph status` prints it.
 - `workgraph resume --add-time <duration>` grants the run more time. A grant
