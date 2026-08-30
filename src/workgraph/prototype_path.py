@@ -208,7 +208,7 @@ def status(wf: dict[str, Any], steps: list[tuple[str, Any]], now: datetime) -> s
     if kind == "stop":
         if s["reason"] == "gate":
             return f"parked at {s['node']} for {fmt((now - parse(s['time'])).total_seconds())}: {wf['nodes'][s['node']]['gate']}"
-        return f"stopped: {s['reason']}" + ("" if s["reason"] == "end" else f" at {s['node']}")
+        return END if s["reason"] == "end" else f"{s['reason']} at {s['node']}"
     live = [nr for k, nr in steps if k == "run" and running(nr)]
     names = ", ".join(f"{nr['name']} {dur(nr, now)}" for nr in live) or "between nodes"
     return f"running {names}"
@@ -460,7 +460,7 @@ def path_line(steps: list[tuple[str, Any]], now: datetime, width: int) -> str:
 def render(wf: dict[str, Any], events: list[dict[str, Any]], now: datetime, variant: str, use_ascii: bool, console: Console, g: dict[str, str] = GLYPHS["plain"], pulse: float | None = None) -> None:
     steps = model(events)
     line = status(wf, steps, now)
-    style = {"p": "bold yellow", "r": "bold"}.get(line[0], "green" if line == "stopped: end" else "red" if "failure" in line else "bold yellow")
+    style = {"p": "bold yellow", "r": "bold"}.get(line[0], "green" if line == END else "red" if line.startswith("failure") else "bold yellow")
     console.print(Text(f'run: dev "#62" · spent {spent(steps, now)} · ').append(line, style))
     console.print()
     if variant == "A":
