@@ -64,7 +64,11 @@ _Avoid_: Logs, artifacts, history
 
 **Node run output**:
 The stdout and stderr the process of a node run writes. workgraph keeps them for inspection. A map node run and a gate node run have none.
-_Avoid_: Logs, transcript, capture
+_Avoid_: Logs, capture
+
+**Transcript**:
+The rendered view of an agent node run's stdout: the text blocks and one `▸ <tool>: <summary>` line per tool call. show-node drops thinking, the StructuredOutput call, tool results, and the system, rate-limit, and result lines.
+_Avoid_: Log, conversation
 
 **Journal**:
 The append-only record of a run's events, written as they happen.
