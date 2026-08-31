@@ -71,6 +71,21 @@ Requires Python 3.12+. Agent nodes additionally require the `claude` CLI on
   - the spent time and each effective time limit;
   - the spent cost and the effective cost limit when the workflow declares
     one.
+- `workgraph show-node <node>#<n>` — review one node run of the run in the
+  current directory; `<node>` alone names the node's last node run. The
+  header lists the start time, the end time and duration (or the running
+  time of a node run in progress), the cost, and the spent cost. Times are
+  local ISO 8601. The sections follow:
+  - `input`: the run input and the delivered handoff.
+  - `stdout` and `stderr`: the node run output. Agent stdout renders as a
+    transcript; `--raw` prints the stream-json lines instead.
+  - `outcome`: `<outcome> → <target>`; a map node run lists its children.
+  - `handoff`: the emitted handoff.
+
+  Each error prints its message on stderr and exits 1:
+  - `no run in <dir>`
+  - `no node run of '<node>'`
+  - `no node run '<node>#<n>'`
 - `workgraph viz <workflow>` — print the workflow graph. `--unicode`
   (default), `--ascii`, or `--mermaid` for the mermaid source. The unicode and
   ascii styles widen the diagram to the terminal width. `--theme <name>` picks

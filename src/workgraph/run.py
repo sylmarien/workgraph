@@ -435,12 +435,13 @@ def _next_node_run(state: dict[str, Any], node: str) -> str:
     return f"{node}#{runs[node]}"
 
 
-def _node_name(node_run: str) -> str:
+def node_name(node_run: str) -> str:
     """Return the node name of a node run name."""
     return node_run.rpartition("#")[0]
 
 
-def _output(directory: Path, node_run: str, stream: str) -> Path:
+def output_file(directory: Path, node_run: str, stream: str) -> Path:
+    """Return the path of a node run output file: `<run dir>/<node run>.<stream>`."""
     return directory / RUN_DIR / f"{node_run}.{stream}"
 
 
@@ -457,7 +458,7 @@ def _start(
     """
     if "map" not in node:
         for stream in ("stdout", "stderr"):
-            _output(directory, node_run, stream).touch()
+            output_file(directory, node_run, stream).touch()
     delivered = {"source": handoff[0], "text": handoff[1]} if handoff else None
     fanned_out = {} if map_name is None else {"map": map_name}
     _journal(directory, "start", node=node_run, handoff=delivered, **fanned_out)
@@ -502,8 +503,8 @@ def _spawn(
     try:
         argv = shlex.split(command) if isinstance(command, str) else command
         with (
-            _output(directory, node_run, "stdout").open("w") as stdout,
-            _output(directory, node_run, "stderr").open("w") as stderr,
+            output_file(directory, node_run, "stdout").open("w") as stdout,
+            output_file(directory, node_run, "stderr").open("w") as stderr,
         ):
             return subprocess.run(
                 argv,
@@ -515,10 +516,10 @@ def _spawn(
                 stderr=stderr,
             )
     except (OSError, ValueError, IndexError) as error:
-        raise NodeFailure(f"node '{_node_name(node_run)}': spawn failure: {error}") from error
+        raise NodeFailure(f"node '{node_name(node_run)}': spawn failure: {error}") from error
     except subprocess.TimeoutExpired:
         raise NodeFailure(
-            f"node '{_node_name(node_run)}': hard time limit of {hard:g} s reached"
+            f"node '{node_name(node_run)}': hard time limit of {hard:g} s reached"
         ) from None
 
 
@@ -540,7 +541,7 @@ def _run_map(
     hard: float | None,
     spent: float,
 ) -> tuple[str, str | None, float]:
-    name = _node_name(node_run)
+    name = node_name(node_run)
     nodes = workflow["nodes"]
     defaults = workflow.get("defaults", {})
 
@@ -593,7 +594,7 @@ def _run_agent(
 
     The agent's stdout holds one stream-json event per line; the last line is the result.
     """
-    name = _node_name(node_run)
+    name = node_name(node_run)
     # The definition resolves from the invocation directory (the process cwd);
     # only the spawned agent executes in the target directory.
     definition = _load_agent_definition(name, node["agent"])
@@ -605,7 +606,7 @@ def _run_agent(
     completed = _spawn(node_run, command, directory, hard, spent)
     if completed.returncode != 0:
         raise NodeFailure(f"node '{name}': agent exited with code {completed.returncode}")
-    lines = _output(directory, node_run, "stdout").read_text().splitlines()
+    lines = output_file(directory, node_run, "stdout").read_text().splitlines()
     try:
         result = json.loads(lines[-1] if lines else "")
     except json.JSONDecodeError as error:
@@ -671,13 +672,13 @@ def _agent_argv(
     return command
 
 
-def _load_agent_definition(node_name: str, agent: str) -> dict[str, str]:
+def _load_agent_definition(node: str, agent: str) -> dict[str, str]:
     for base in (Path.cwd(), Path.home()):
         path = base / ".workgraph" / "agents" / f"{agent}.md"
         if path.is_file():
             return _parse_agent_definition(path.read_text())
     raise NodeFailure(
-        f"node '{node_name}': agent definition '{agent}' not found in .workgraph/agents"
+        f"node '{node}': agent definition '{agent}' not found in .workgraph/agents"
         " of the invocation directory or the home directory"
     )
 

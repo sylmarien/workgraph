@@ -31,6 +31,7 @@ from workgraph.run import (
     stop_line,
     time_limits,
 )
+from workgraph.show import RecordError, show_node
 from workgraph.workflow import (
     END,
     WorkflowError,
@@ -52,6 +53,8 @@ def main(argv: list[str] | None = None) -> int:
             return _resume(args)
         case "status":
             return _status(args)
+        case "show-node":
+            return _show_node(args)
         case "viz":
             return _viz(args)
         case _:
@@ -72,6 +75,7 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_run_parser(subparsers)
     _add_resume_parser(subparsers)
     subparsers.add_parser("status", help="Report the state of the run in the directory.")
+    _add_show_node_parser(subparsers)
     _add_viz_parser(subparsers)
     return parser
 
@@ -96,6 +100,18 @@ def _add_run_parser(subparsers: "argparse._SubParsersAction[argparse.ArgumentPar
     run = subparsers.add_parser("run", help="Run a workflow.")
     run.add_argument("workflow", help="Workflow name.")
     run.add_argument("input", help="Run input, typically an issue ref.")
+
+
+def _add_show_node_parser(
+    subparsers: "argparse._SubParsersAction[argparse.ArgumentParser]",
+) -> None:
+    show = subparsers.add_parser(
+        "show-node", help="Review one node run of the run in the directory."
+    )
+    show.add_argument("node_run", help="<node>#<n>, or <node> for its last node run.")
+    show.add_argument(
+        "--raw", action="store_true", help="Print agent stdout as the stream-json lines."
+    )
 
 
 def _add_viz_parser(subparsers: "argparse._SubParsersAction[argparse.ArgumentParser]") -> None:
@@ -208,10 +224,22 @@ def _status(args: argparse.Namespace) -> int:
     return _report(action)
 
 
+def _show_node(args: argparse.Namespace) -> int:
+    def action() -> None:
+        console = Console()
+        for line in show_node(args.directory, args.node_run, args.raw):
+            if isinstance(line, str):
+                sys.stdout.write(line)
+            else:
+                console.print(line, soft_wrap=True)
+
+    return _report(action)
+
+
 def _report(action: Callable[[], None]) -> int:
     try:
         action()
-    except (WorkflowError, RunInProgress, NothingToResume, DecisionError) as error:
+    except (WorkflowError, RunInProgress, NothingToResume, DecisionError, RecordError) as error:
         print(error, file=sys.stderr)
         return 1
     except NodeFailure as error:
