@@ -86,6 +86,29 @@ Requires Python 3.12+. Agent nodes additionally require the `claude` CLI on
   - `no run in <dir>`
   - `no node run of '<node>'`
   - `no node run '<node>#<n>'`
+- `workgraph show-journal` — list the events of the run in the current
+  directory, one line per event, each starting with the local ISO 8601 time:
+  - `run: <workflow> "<input>"`
+  - `<node run>: started`
+  - `<node run>: <outcome> → <target>  <duration>`, then `$<cost>` for an
+    agent node run; `<node run>: failure: <message>  <duration>`
+  - `<node>: LIMIT → <target>`
+  - `<gate>: accept` or `<gate>: reject`, or `resumed`; then `+<time>` and
+    `+$<cost>` for the grants
+  - the stop line
+
+  A fanned-out node run reads `<map>/<node run>`. A run without a stop ends
+  on an untimestamped line: `running <node run> <elapsed>… · spent <t>`
+  while the run is in progress, `interrupted at <node> · …` otherwise.
+  `--with-nodes` prints a node run's stdout and stderr before its end line,
+  the output of every node run in progress before the untimestamped last
+  line, and prefixes every line with its origin:
+  - `[workgraph#] ` for a journal event
+  - `[<node run>] ` for a stdout line
+  - `[<node run> stderr] ` for a stderr line
+
+  Agent stdout renders as a transcript unless `--raw`. Without a run:
+  `no run in <dir>` on stderr, exit 1.
 - `workgraph viz <workflow>` — print the workflow graph. `--unicode`
   (default), `--ascii`, or `--mermaid` for the mermaid source. The unicode and
   ascii styles widen the diagram to the terminal width. `--theme <name>` picks

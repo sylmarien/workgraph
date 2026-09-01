@@ -2,6 +2,8 @@
 
 import json
 import os
+import time
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -60,6 +62,16 @@ def dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
     monkeypatch.chdir(project)
     monkeypatch.setenv("HOME", str(home))
     return project, home
+
+
+@pytest.fixture
+def utc_plus_2(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Fix the local time zone to UTC+2."""
+    monkeypatch.setenv("TZ", "TEST-2")
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()
 
 
 def write(base: Path, name: str, text: str) -> None:

@@ -113,7 +113,7 @@ def park_report(handoff: Sequence[str] | None) -> str:
     return f"Review material from {source}:\n{text}"
 
 
-def _format_duration(seconds: float) -> str:
+def format_duration(seconds: float) -> str:
     """Format whole seconds as 5s, 4m05s, or 2h30m."""
     whole = int(seconds)
     if whole < 60:
@@ -125,7 +125,7 @@ def _format_duration(seconds: float) -> str:
 
 def _spent_text(state: dict[str, Any]) -> str:
     """Format the spent amounts: ` · spent <t>`, then ` · $<c>` when the cost is non-zero."""
-    text = f" · spent {_format_duration(state.get('spent_time', 0))}"
+    text = f" · spent {format_duration(state.get('spent_time', 0))}"
     cost = round(state.get("spent_cost", 0), 2)
     return text + (f" · ${cost:.2f}" if cost else "")
 
@@ -158,7 +158,7 @@ def running_line(state: dict[str, Any], journal: list[dict[str, Any]]) -> Text:
     if event.get("map"):
         name = f"{event['map']}/{name}"
     elapsed = datetime.now(UTC) - datetime.fromisoformat(event["time"])
-    text = Text(f"running {name} {_format_duration(elapsed.total_seconds())}…", "bold")
+    text = Text(f"running {name} {format_duration(elapsed.total_seconds())}…", "bold")
     return text.append(_spent_text(state), GREY)
 
 

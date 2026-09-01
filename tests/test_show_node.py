@@ -2,8 +2,6 @@
 
 import json
 import re
-import time
-from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -177,16 +175,12 @@ LINT_STDOUT = "progress\rAll checks passed!\n\tok\n"
 
 
 @pytest.fixture
-def record(dirs: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
-    """Write the DEV workflow and the ended run record; fix the local time zone to UTC+2."""
+def record(dirs: tuple[Path, Path], utc_plus_2: None) -> Path:
+    """Write the DEV workflow and the ended run record."""
     project, _ = dirs
-    monkeypatch.setenv("TZ", "TEST-2")
-    time.tzset()
     write(project, "dev", DEV)
     write_record(project, EVENTS)
-    yield project
-    monkeypatch.undo()
-    time.tzset()
+    return project
 
 
 def write_record(

@@ -2,7 +2,7 @@
 
 import argparse
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from rich.cells import cell_len
@@ -31,7 +31,7 @@ from workgraph.run import (
     stop_line,
     time_limits,
 )
-from workgraph.show import RecordError, show_node
+from workgraph.show import Line, RecordError, show_journal, show_node
 from workgraph.workflow import (
     END,
     WorkflowError,
@@ -54,7 +54,9 @@ def main(argv: list[str] | None = None) -> int:
         case "status":
             return _status(args)
         case "show-node":
-            return _show_node(args)
+            return _report(lambda: _print(show_node(args.directory, args.node_run, args.raw)))
+        case "show-journal":
+            return _report(lambda: _print(show_journal(args.directory, args.with_nodes, args.raw)))
         case "viz":
             return _viz(args)
         case _:
@@ -76,6 +78,7 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_resume_parser(subparsers)
     subparsers.add_parser("status", help="Report the state of the run in the directory.")
     _add_show_node_parser(subparsers)
+    _add_show_journal_parser(subparsers)
     _add_viz_parser(subparsers)
     return parser
 
@@ -109,6 +112,22 @@ def _add_show_node_parser(
         "show-node", help="Review one node run of the run in the directory."
     )
     show.add_argument("node_run", help="<node>#<n>, or <node> for its last node run.")
+    show.add_argument(
+        "--raw", action="store_true", help="Print agent stdout as the stream-json lines."
+    )
+
+
+def _add_show_journal_parser(
+    subparsers: "argparse._SubParsersAction[argparse.ArgumentParser]",
+) -> None:
+    show = subparsers.add_parser(
+        "show-journal", help="List the events of the run in the directory."
+    )
+    show.add_argument(
+        "--with-nodes",
+        action="store_true",
+        help="Print every node run's output before its end line, each line with its origin.",
+    )
     show.add_argument(
         "--raw", action="store_true", help="Print agent stdout as the stream-json lines."
     )
@@ -224,16 +243,14 @@ def _status(args: argparse.Namespace) -> int:
     return _report(action)
 
 
-def _show_node(args: argparse.Namespace) -> int:
-    def action() -> None:
-        console = Console()
-        for line in show_node(args.directory, args.node_run, args.raw):
-            if isinstance(line, str):
-                sys.stdout.write(line)
-            else:
-                console.print(line, soft_wrap=True)
-
-    return _report(action)
+def _print(lines: Sequence[Line]) -> None:
+    """Print the lines: a str verbatim, a Text through rich."""
+    console = Console()
+    for line in lines:
+        if isinstance(line, str):
+            sys.stdout.write(line)
+        else:
+            console.print(line, soft_wrap=True)
 
 
 def _report(action: Callable[[], None]) -> int:
