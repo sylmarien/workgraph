@@ -67,12 +67,16 @@ The stdout and stderr the process of a node run writes. workgraph keeps them for
 _Avoid_: Logs, capture
 
 **Transcript**:
-The rendered view of an agent node run's stdout: the text blocks and one `▸ <tool>: <summary>` line per tool call. show-node drops thinking, the StructuredOutput call, tool results, and the system, rate-limit, and result lines.
+The rendered view of an agent node run's stdout: the text blocks and one `▸ <tool>: <summary>` line per tool call. show-node and show-journal `--with-nodes` drop thinking, the StructuredOutput call, tool results, and the system, rate-limit, and result lines.
 _Avoid_: Log, conversation
 
 **Journal**:
 The append-only record of a run's events, written as they happen.
 _Avoid_: Log, history, trace
+
+**Origin**:
+The prefix show-journal `--with-nodes` puts on every line to name its source: `[<node run>] ` for stdout, `[<node run> stderr] ` for stderr, `[workgraph#] ` for a journal event.
+_Avoid_: Tag, label, source column
 
 **Follow**:
 Keeping an inspection view current while the run writes. A follow ends when the run stops or the followed node run ends.
@@ -87,11 +91,11 @@ A run whose process exited between events, leaving no stop. It resumes at the no
 _Avoid_: Crashed, killed, aborted
 
 **Stop line**:
-The one line that reports a stop: `END`, or the stop reason and the node, then the spent amounts. `run` and `resume` end on it; `status` prints it first.
+The one line that reports a stop: `END`, or the stop reason and the node, then the spent amounts. `run`, `resume`, and `show-journal` end on it; `status` prints it first.
 _Avoid_: Summary, footer, banner
 
 **Running line**:
-The first line `status` prints for a run in progress: the node run in progress and its elapsed time, then the spent amounts.
+The line that reports a run in progress: the node run in progress and its elapsed time, then the spent amounts. `status` prints it first; `show-journal` ends on it, untimestamped.
 _Avoid_: Progress bar, spinner, live line
 
 **Failure**:
