@@ -54,16 +54,18 @@ def show_node(directory: Path, node_run: str, raw: bool) -> list[Line]:
     name = _resolve(node_run, record.starts)
     node = record.node(name)
     started, ended = record.starts[name], record.ends.get(name)
-    now = datetime.now(UTC)
+    now = datetime.now(UTC) if (directory / LOCK_FILE).exists() else None
     header = [
         Text(_display_name(started), "bold"),
         Text(f"started  {_local_time(started['time'])}", GREY),
     ]
     if ended is None:
-        header.append(Text(f"running  {_duration(started, None, now)}", GREY))
+        header.append(
+            Text("interrupted" if now is None else f"running  {_elapsed(started, now)}…", GREY)
+        )
     else:
         header.append(
-            Text(f"ended    {_local_time(ended['time'])}  {_duration(started, ended, now)}", GREY)
+            Text(f"ended    {_local_time(ended['time'])}  {_duration(started, ended)}", GREY)
         )
         cost = f"cost     ${ended['cost']:.2f}"
         if "spent_cost" in ended:
@@ -113,7 +115,6 @@ def _rows(directory: Path, record: _Record) -> list[tuple[Event | None, Text]]:
 
     The event is None on the untimestamped last line of a run without a stop.
     """
-    now = datetime.now(UTC)
     rows: list[tuple[Event | None, Text]] = []
     spent: dict[str, Any] = {}
     stopped_at = ""
@@ -127,7 +128,7 @@ def _rows(directory: Path, record: _Record) -> list[tuple[Event | None, Text]]:
                 # A fanned-out end carries no spent amounts.
                 spent = {k: e[k] for k in ("spent_time", "spent_cost") if k in e} or spent
                 line = Text(f"{_display_name(e)}: ").append_text(_end_text(record, e["node"]))
-                line.append(f"  {_duration(record.starts[e['node']], e, now)}", GREY)
+                line.append(f"  {_duration(record.starts[e['node']], e)}", GREY)
                 if "agent" in record.node(e["node"]) and "failure" not in e:
                     line.append(f"  ${e['cost']:.2f}", GREY)
             case "limit":
@@ -225,14 +226,13 @@ def _local_time(time: str) -> str:
     return datetime.fromisoformat(time).astimezone().isoformat(timespec="seconds")
 
 
-def _duration(started: Event, ended: Event | None, now: datetime) -> str:
-    """Return the wall-clock between the two events as `12s`, `3m05s`, or `1h02m`.
+def _duration(started: Event, ended: Event) -> str:
+    """Return the wall-clock between the two events as `12s`, `3m05s`, or `1h02m`."""
+    return _elapsed(started, datetime.fromisoformat(ended["time"]))
 
-    Without an end event, measure until `now` and append an ellipsis.
-    """
-    end = now if ended is None else datetime.fromisoformat(ended["time"])
-    text = format_duration((end - datetime.fromisoformat(started["time"])).total_seconds())
-    return text if ended else text + "…"
+
+def _elapsed(started: Event, end: datetime) -> str:
+    return format_duration((end - datetime.fromisoformat(started["time"])).total_seconds())
 
 
 def _section(title: str, body: Sequence[Line]) -> list[Line]:
@@ -305,31 +305,35 @@ def _tool_summary(tool_input: dict[str, Any]) -> str:
     return textwrap.shorten(json.dumps(tool_input), 100, placeholder="...")
 
 
-def _outcome(record: _Record, name: str, now: datetime) -> list[Line]:
-    """Render the end text; show-node renders `running <running time>…` for a node run in progress.
-
-    A map node run lists its children.
-    """
-    top = _end_text(record, name)
-    if name not in record.ends:
-        top.append(f" {_duration(record.starts[name], None, now)}", "bold")
-    lines: list[Line] = [top]
+def _outcome(record: _Record, name: str, now: datetime | None) -> list[Line]:
+    """Render the end text; a map node run lists its children."""
+    lines: list[Line] = [_outcome_text(record, name, now)]
     if "map" in record.node(name):
         # The children are the node runs started between the map node run's start and end.
         first = record.events.index(record.starts[name]) + 1
         last = record.events.index(record.ends[name]) if name in record.ends else len(record.events)
         for child in (e for e in record.events[first:last] if e["event"] == "start"):
-            line = Text(f"  {_display_name(child)}  ").append_text(_end_text(record, child["node"]))
-            duration = _duration(child, record.ends.get(child["node"]), now)
-            lines.append(line.append(f"  {duration}", GREY))
+            line = Text(f"  {_display_name(child)}  ").append_text(
+                _outcome_text(record, child["node"], now)
+            )
+            if child["node"] in record.ends:
+                line.append(f"  {_duration(child, record.ends[child['node']])}", GREY)
+            lines.append(line)
     return lines
+
+
+def _outcome_text(record: _Record, name: str, now: datetime | None) -> Text:
+    """Render the end text. Without an end: `running <running time>…`, or `interrupted` without a lock."""
+    if name in record.ends:
+        return _end_text(record, name)
+    return Text(
+        "interrupted" if now is None else f"running {_elapsed(record.starts[name], now)}…", "bold"
+    )
 
 
 def _end_text(record: _Record, name: str) -> Text:
     """Render the outcome and target. Color only coded outcomes: pass, fail, and failure."""
-    ended = record.ends.get(name)
-    if ended is None:
-        return Text("running", "bold")
+    ended = record.ends[name]
     if "failure" in ended:
         return Text(f"failure: {ended['failure']}", "red")
     outcome = str(ended["outcome"])

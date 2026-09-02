@@ -74,8 +74,9 @@ Requires Python 3.12+. Agent nodes additionally require the `claude` CLI on
 - `workgraph show-node <node>#<n>` — review one node run of the run in the
   current directory; `<node>` alone names the node's last node run. The
   header lists the start time, the end time and duration (or the running
-  time of a node run in progress), the cost, and the spent cost. Times are
-  local ISO 8601. The sections follow:
+  time of a node run in progress, or `interrupted` for a node run without
+  an end in a run that holds no lock), the cost, and the spent cost. Times
+  are local ISO 8601. The sections follow:
   - `input`: the run input and the delivered handoff.
   - `stdout` and `stderr`: the node run output. Agent stdout renders as a
     transcript; `--raw` prints the stream-json lines instead.

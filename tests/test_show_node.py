@@ -10,7 +10,7 @@ import pytest
 
 from tests.conftest import write
 from workgraph.cli import main
-from workgraph.run import RUN_DIR
+from workgraph.run import LOCK_FILE, RUN_DIR
 
 DEV = """
 start = "plan"
@@ -353,6 +353,7 @@ def test_node_run_in_progress_shows_running_and_exits_zero(
     record: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     write_record(record, IN_PROGRESS)
+    (record / LOCK_FILE).touch()
     (record / RUN_DIR / "test#2.stdout").write_text(
         assistant(text_block("Working.")) + '\n{"type": "assis'
     )
@@ -370,12 +371,34 @@ def test_map_node_run_in_progress_lists_its_children(
     record: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     write_record(record, IN_PROGRESS)
+    (record / LOCK_FILE).touch()
     assert main(["show-node", "checks"]) == 0
     outcome = capsys.readouterr().out.partition("── outcome ──\n")[2]
     assert re.fullmatch(
-        r"running \S+…\n  checks/lint#2  pass  1s\n  checks/test#2  running  \S+…\n\n"
+        r"running \S+…\n  checks/lint#2  pass  1s\n  checks/test#2  running \S+…\n\n"
         r"── handoff ──\n\(none\)\n\n",
         outcome,
+    )
+
+
+def test_an_interrupted_node_run_shows_interrupted_without_a_duration(
+    record: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_record(record, IN_PROGRESS)
+    assert main(["show-node", "test"]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("checks/test#2\nstarted  2026-08-31T12:01:40+02:00\ninterrupted\n\n")
+    assert out.endswith("\n── outcome ──\ninterrupted\n\n── handoff ──\n(none)\n\n")
+
+
+def test_an_interrupted_map_node_run_lists_its_children(
+    record: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_record(record, IN_PROGRESS)
+    assert main(["show-node", "checks"]) == 0
+    assert capsys.readouterr().out.endswith(
+        "\n── outcome ──\ninterrupted\n  checks/lint#2  pass  1s\n  checks/test#2  interrupted\n\n"
+        "── handoff ──\n(none)\n\n"
     )
 
 
