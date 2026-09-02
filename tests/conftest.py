@@ -81,6 +81,67 @@ def write(base: Path, name: str, text: str) -> None:
     (directory / f"{name}.toml").write_text(text)
 
 
+DEV = """
+start = "plan"
+
+[budget]
+cost = 1.0
+
+[defaults]
+harness = "claude"
+model = "opus"
+effort = "high"
+
+[nodes.plan]
+agent = "planner"
+outcomes = ["done"]
+
+[nodes.plan.transitions]
+done = "checks"
+
+[nodes.checks]
+map = ["lint", "test"]
+resolve = "all"
+
+[nodes.checks.limits]
+visits = 2
+
+[nodes.checks.transitions]
+pass = "ship"
+fail = "plan"
+LIMIT = "ship"
+
+[nodes.lint]
+command = "ruff check ."
+
+[nodes.test]
+agent = "tester"
+outcomes = ["pass"]
+
+[nodes.ship]
+gate = "Ship it?"
+
+[nodes.ship.transitions]
+accept = "pr"
+reject = "plan"
+
+[nodes.pr]
+agent = "publisher"
+outcomes = ["done"]
+
+[nodes.pr.transitions]
+done = "END"
+"""
+
+
+@pytest.fixture
+def dev_project(dirs: tuple[Path, Path], utc_plus_2: None) -> Path:
+    """Write the DEV workflow."""
+    project, _ = dirs
+    write(project, "dev", DEV)
+    return project
+
+
 LOOP = """
 start = "check"
 

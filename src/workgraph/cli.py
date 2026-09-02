@@ -2,7 +2,7 @@
 
 import argparse
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from rich.cells import cell_len
@@ -11,7 +11,6 @@ from termaid import render_rich
 from termaid.renderer.themes import THEMES
 
 from workgraph.run import (
-    LOCK_FILE,
     BudgetStop,
     DecisionError,
     Escalation,
@@ -21,6 +20,7 @@ from workgraph.run import (
     RunInProgress,
     cost_limit,
     echo,
+    is_in_progress,
     load_state,
     park_report,
     read_journal,
@@ -31,7 +31,15 @@ from workgraph.run import (
     stop_line,
     time_limits,
 )
-from workgraph.show import Line, RecordError, show_journal, show_node
+from workgraph.show import (
+    Line,
+    RecordError,
+    Stderr,
+    follow_journal,
+    follow_node,
+    show_journal,
+    show_node,
+)
 from workgraph.workflow import (
     END,
     WorkflowError,
@@ -54,9 +62,9 @@ def main(argv: list[str] | None = None) -> int:
         case "status":
             return _status(args)
         case "show-node":
-            return _report(lambda: _print(show_node(args.directory, args.node_run, args.raw)))
+            return _report(lambda: _print_lines(_get_node_lines(args)))
         case "show-journal":
-            return _report(lambda: _print(show_journal(args.directory, args.with_nodes, args.raw)))
+            return _report(lambda: _print_lines(_get_journal_lines(args)))
         case "viz":
             return _viz(args)
         case _:
@@ -115,6 +123,11 @@ def _add_show_node_parser(
     show.add_argument(
         "--raw", action="store_true", help="Print agent stdout as the stream-json lines."
     )
+    show.add_argument(
+        "--follow",
+        action="store_true",
+        help="Keep printing the node run's output until it ends; its stderr goes to stderr.",
+    )
 
 
 def _add_show_journal_parser(
@@ -130,6 +143,14 @@ def _add_show_journal_parser(
     )
     show.add_argument(
         "--raw", action="store_true", help="Print agent stdout as the stream-json lines."
+    )
+    show.add_argument(
+        "--follow", action="store_true", help="Keep printing the events until the run stops."
+    )
+    show.add_argument(
+        "--until-end",
+        action="store_true",
+        help="Follow through parks and other stops until END; implies --follow.",
     )
 
 
@@ -217,7 +238,7 @@ def _status(args: argparse.Namespace) -> int:
         if state is None:
             raise NothingToResume(f"no run in {args.directory}")
         journal = read_journal(args.directory)
-        if (args.directory / LOCK_FILE).exists():
+        if is_in_progress(args.directory):
             echo(running_line(state, journal))
             return
         if state["node"] == END:
@@ -243,14 +264,32 @@ def _status(args: argparse.Namespace) -> int:
     return _report(action)
 
 
-def _print(lines: Sequence[Line]) -> None:
-    """Print the lines: a str verbatim, a Text through rich."""
+def _get_node_lines(args: argparse.Namespace) -> Iterable[Line]:
+    if args.follow:
+        return follow_node(args.directory, args.node_run, args.raw)
+    return show_node(args.directory, args.node_run, args.raw)
+
+
+def _get_journal_lines(args: argparse.Namespace) -> Iterable[Line]:
+    if args.follow or args.until_end:
+        return follow_journal(args.directory, args.with_nodes, args.raw, args.until_end)
+    return show_journal(args.directory, args.with_nodes, args.raw)
+
+
+def _print_lines(lines: Iterable[Line]) -> None:
+    """Print each line as it comes: a str verbatim, a Stderr verbatim on stderr, a Text through rich."""
     console = Console()
-    for line in lines:
-        if isinstance(line, str):
-            sys.stdout.write(line)
-        else:
-            console.print(line, soft_wrap=True)
+    try:
+        for line in lines:
+            if isinstance(line, str):
+                stream = sys.stderr if isinstance(line, Stderr) else sys.stdout
+                stream.write(line)
+                stream.flush()
+            else:
+                console.print(line, soft_wrap=True)
+    except BrokenPipeError:
+        # The reader closed the pipe: exit quietly, as rich does for a Text.
+        console.on_broken_pipe()
 
 
 def _report(action: Callable[[], None]) -> int:

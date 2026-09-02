@@ -87,6 +87,14 @@ Requires Python 3.12+. Agent nodes additionally require the `claude` CLI on
   - `no run in <dir>`
   - `no node run of '<node>'`
   - `no node run '<node>#<n>'`
+
+  `--follow` keeps the view current while the run writes. `show-node
+  --follow` prints, in order:
+  - the name, the start time, and the `input` section;
+  - the node run's stdout on stdout and its stderr on stderr, as complete
+    lines arrive;
+  - the end time, duration, and cost lines, then the `outcome` and
+    `handoff` sections, at the node run's end.
 - `workgraph show-journal` — list the events of the run in the current
   directory, one line per event, each starting with the local ISO 8601 time:
   - `run: <workflow> "<input>"`
@@ -110,10 +118,32 @@ Requires Python 3.12+. Agent nodes additionally require the `claude` CLI on
 
   Agent stdout renders as a transcript unless `--raw`. Without a run:
   `no run in <dir>` on stderr, exit 1.
+
+  `--follow` keeps the view current while the run writes. `show-journal
+  --follow` prints, in order:
+  - the events so far, without the untimestamped last line;
+  - every event as it arrives;
+  - the stop line, which ends the follow.
+
+  `--until-end` follows through every stop but `END`:
+  - the follow waits at a park or another stop;
+  - it prints the resume line when the run resumes;
+  - it ends at `END`.
+
+  `--with-nodes --follow` prints the output of every node run in progress
+  as it arrives.
 - `workgraph viz <workflow>` — print the workflow graph. `--unicode`
   (default), `--ascii`, or `--mermaid` for the mermaid source. The unicode and
   ascii styles widen the diagram to the terminal width. `--theme <name>` picks
   one of termaid's color themes; `--help` lists them.
+
+A follow polls the run record every 0.5 s and never writes to it. For a
+stopped run without `--until-end`, or for an ended node run, it prints the
+same output as the command without `--follow`. It exits 0 at its end, and
+130 on Ctrl-C. Two conditions end it with a message on stderr and exit 1:
+- `the run stopped without a stop event`: the run is interrupted.
+- `the run was replaced`: the journal shrank or is gone; a new `run` wiped
+  the record.
 
 Every subcommand takes `--directory <dir>` ahead of it:
 `workgraph --directory <dir> run <workflow> "<input>"`. The flag separates
