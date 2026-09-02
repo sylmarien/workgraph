@@ -10,10 +10,6 @@ Implement the work the user names, following the process below. This
 process is for interactive sessions; the `dev` workflow runs its own nodes
 for testing, review, and the PR.
 
-## Asking the user
-
-Never call the `AskUserQuestion` tool — it is broken in the client the user works from, so the answer never arrives. When you need input, ask the question in plain text in your reply and end the turn.
-
 ## Pull requests
 
 - **Open a PR whenever a piece of work is finished** — don't wait to be asked. "Finished" is defined below.
@@ -65,4 +61,4 @@ The **`ponytail` plugin** sits underneath those phases rather than in one of the
 
 The plugin also installs three hooks (`SessionStart`, `SubagentStart`, `UserPromptSubmit`) that keep the active mode alive across compaction and sub-agents. They shell out to `node`, so a harness without it on `PATH` loses mode persistence — the skills themselves still work.
 
-**Not covered by any skill:** the PR rules above — open on finish, never merge, one commit per PR — are prose only. So is the `AskUserQuestion` ban.
+**Not covered by any skill:** the PR rules above — open on finish, never merge, one commit per PR — are prose only.

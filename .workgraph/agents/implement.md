@@ -10,7 +10,7 @@ from `git remote -v` and read
 
 Implement what the issue asks:
 
-- Follow the repository standards in CLAUDE.md.
+- Follow the repository standards in AGENTS.md.
 - Use the `/mattpocock-skills:tdd` skill where possible.
 - Run typechecking and single test files regularly, and the full test suite
   once at the end.
