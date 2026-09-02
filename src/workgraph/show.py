@@ -1,21 +1,23 @@
-"""Read the run record: show-node and show-journal."""
+"""Read the run record: show-node and show-journal, with or without --follow."""
 
 import json
+import os
 import textwrap
-from collections.abc import Sequence
+import time
+from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any
 
 from rich.text import Text
 
 from workgraph.run import (
     GREY,
-    LOCK_FILE,
+    JOURNAL_FILE,
     format_duration,
+    is_in_progress,
     node_name,
     output_file,
-    read_journal,
     read_state,
     running_line,
     stop_line,
@@ -25,67 +27,211 @@ from workgraph.workflow import load_workflow
 # No node run name ends with '#'.
 WORKGRAPH_ORIGIN = "workgraph#"
 DECISION_STYLE = {"accept": "green", "reject": "red"}
+# Seconds between two polls of the run record under follow.
+POLL_INTERVAL = 0.5
 
 Event = dict[str, Any]
 # A str prints verbatim; a Text renders through rich.
 Line = Text | str
 
 
+class Stderr(str):
+    """A line that prints verbatim on stderr: the followed node run's stderr."""
+
+
 class RecordError(Exception):
     """The run record does not hold what the command asks for."""
 
 
-class _Record(NamedTuple):
-    """The workflow nodes and start node, and the journal events indexed by node run."""
+class _LineReader:
+    """Read the complete lines a file gains between calls; hold a trailing partial line.
 
-    nodes: dict[str, dict[str, Any]]
-    start: str
-    events: list[Event]
-    starts: dict[str, Event]
-    ends: dict[str, Event]
+    The file stays open: a new `run` unlinks it, and os.fstat reports that.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.file = path.open("rb")
+        self.partial_line = b""
+
+    def read_lines(self, include_partial: bool = False) -> list[str]:
+        """Return the lines completed since the last call. Bytes that are not UTF-8 read as `�`.
+
+        With include_partial, a trailing partial line returns as a line: the writer has exited.
+        A file that was unlinked or shrank belongs to a replaced run.
+        """
+        file_stat = os.fstat(self.file.fileno())
+        if file_stat.st_nlink == 0 or file_stat.st_size < self.file.tell():
+            raise RecordError("the run was replaced")
+        *lines, self.partial_line = (self.partial_line + self.file.read()).split(b"\n")
+        if include_partial and self.partial_line:
+            lines.append(self.partial_line)
+            self.partial_line = b""
+        return [line.decode(errors="replace") for line in lines]
+
+
+class _RunRecord:
+    """The workflow nodes and start node, and the journal events read so far, indexed by node run.
+
+    read_events() appends the events the run wrote since; a follow calls it on every poll.
+    """
+
+    def __init__(self, directory: Path) -> None:
+        self.directory = directory
+        no_run_error = RecordError(f"no run in {directory}")
+        try:
+            self.journal_reader = _LineReader(directory / JOURNAL_FILE)
+        except FileNotFoundError:
+            raise no_run_error from None
+        self.events: list[Event] = []
+        self.start_events: dict[str, Event] = {}
+        self.end_events: dict[str, Event] = {}
+        self.read_events()
+        if not self.events:
+            raise no_run_error
+        workflow = load_workflow(self.events[0]["workflow"])
+        self.nodes: dict[str, dict[str, Any]] = workflow["nodes"]
+        self.start_node: str = workflow["start"]
+
+    def read_events(self) -> None:
+        """Append the events written since the last read; sample the lock first.
+
+        The run writes its stop before it releases the lock, and a resume takes the lock
+        before it writes its event. A read that brings events after an absent lock samples again.
+        """
+        while True:
+            self.in_progress = is_in_progress(self.directory)
+            new_events = [json.loads(line) for line in self.journal_reader.read_lines()]
+            for event in new_events:
+                if event["event"] == "start":
+                    self.start_events[event["node"]] = event
+                elif event["event"] == "end":
+                    self.end_events[event["node"]] = event
+            self.events += new_events
+            if self.in_progress or not new_events:
+                return
+
+    def poll(self) -> None:
+        """Sleep one poll interval, then read. An interrupted run ends the follow."""
+        if not self.in_progress and not self.stop_event:
+            raise RecordError("the run stopped without a stop event")
+        time.sleep(POLL_INTERVAL)
+        self.read_events()
 
     def node(self, node_run: str) -> dict[str, Any]:
         return self.nodes[node_name(node_run)]
 
+    def is_transcript(self, node_run: str, raw: bool) -> bool:
+        """Return whether a node run's stdout renders as a transcript."""
+        return "agent" in self.node(node_run) and not raw
 
-def show_node(directory: Path, node_run: str, raw: bool) -> list[Line]:
+    @property
+    def stop_event(self) -> Event | None:
+        """Return the stop event when the run has stopped."""
+        last_event = self.events[-1]
+        return last_event if last_event["event"] == "stop" else None
+
+    @property
+    def now(self) -> datetime | None:
+        """Return the time a running duration ends at; None unless the run is in progress."""
+        return datetime.now(UTC) if self.in_progress and not self.stop_event else None
+
+
+def show_node(directory: Path, node_run_identifier: str, raw: bool) -> list[Line]:
     """Render one node run: a header, then the input, stdout, stderr, outcome, and handoff."""
-    record = _read(directory)
-    name = _resolve(node_run, record.starts)
-    node = record.node(name)
-    started, ended = record.starts[name], record.ends.get(name)
-    now = datetime.now(UTC) if (directory / LOCK_FILE).exists() else None
-    header = [
-        Text(_display_name(started), "bold"),
-        Text(f"started  {_local_time(started['time'])}", GREY),
-    ]
-    if ended is None:
-        header.append(
-            Text("interrupted" if now is None else f"running  {_elapsed(started, now)}…", GREY)
-        )
+    record = _RunRecord(directory)
+    return _render_node(record, _resolve_node_run(node_run_identifier, record.start_events), raw)
+
+
+def follow_node(directory: Path, node_run_identifier: str, raw: bool) -> Iterator[Line]:
+    """Yield the name, start, and input, the output as it arrives, then the end and the outcome.
+
+    The node run's stdout renders as show_node renders it; its stderr lines yield as Stderr.
+    For an ended node run, yield show_node's lines.
+    """
+    record = _RunRecord(directory)
+    node_run = _resolve_node_run(node_run_identifier, record.start_events)
+    if node_run in record.end_events or record.stop_event is not None:
+        yield from _render_node(record, node_run, raw)
+        return
+    start_event = record.start_events[node_run]
+    yield from _render_header(start_event)
+    yield Text()
+    yield from _render_section("input", _input(record.events[0]["input"], start_event["handoff"]))
+    yield _render_heading("stdout")
+    output_readers = None if "map" in record.node(node_run) else _open_outputs(directory, node_run)
+    if output_readers is None:
+        yield Text("(none: map node)", GREY)
+    while True:
+        output_complete = node_run in record.end_events or record.stop_event is not None
+        if output_readers is not None:
+            stdout_lines, stderr_lines = (
+                reader.read_lines(include_partial=output_complete) for reader in output_readers
+            )
+            yield from _render_output_lines(stdout_lines, record.is_transcript(node_run, raw))
+            if stderr_lines:
+                yield Stderr("\n".join(stderr_lines) + "\n")
+        if output_complete:
+            break
+        record.poll()
+    now = record.now
+    yield Text()
+    yield from _render_status(record, node_run, now)
+    yield Text()
+    yield from _render_footer(record, node_run, now)
+
+
+def _render_node(record: _RunRecord, node_run: str, raw: bool) -> list[Line]:
+    start_event, now = record.start_events[node_run], record.now
+    stdout_body: Sequence[Line]
+    stderr_body: Sequence[Line]
+    if "map" in record.node(node_run):
+        stdout_body = stderr_body = [Text("(none: map node)", GREY)]
     else:
-        header.append(
-            Text(f"ended    {_local_time(ended['time'])}  {_duration(started, ended)}", GREY)
-        )
-        cost = f"cost     ${ended['cost']:.2f}"
-        if "spent_cost" in ended:
-            cost += f"  spent ${ended['spent_cost']:.2f}"
-        header.append(Text(cost, GREY))
-    stdout: Sequence[Line]
-    stderr: Sequence[Line]
-    if "map" in node:
-        stdout = stderr = [Text("(none: map node)", GREY)]
-    else:
-        stdout = _stream(output_file(directory, name, "stdout"), "agent" in node and not raw)
-        stderr = _stream(output_file(directory, name, "stderr"), False)
+        stdout_reader, stderr_reader = _open_outputs(record.directory, node_run)
+        stdout_body = _render_whole_output(stdout_reader, record.is_transcript(node_run, raw))
+        stderr_body = _render_whole_output(stderr_reader, False)
     return [
-        *header,
+        *_render_header(start_event),
+        *_render_status(record, node_run, now),
         Text(),
-        *_section("input", _input(record.events[0]["input"], started["handoff"])),
-        *_section("stdout", stdout),
-        *_section("stderr", stderr),
-        *_section("outcome", _outcome(record, name, now)),
-        *_section("handoff", _lines(ended["handoff"] if ended else None)),
+        *_render_section("input", _input(record.events[0]["input"], start_event["handoff"])),
+        *_render_section("stdout", stdout_body),
+        *_render_section("stderr", stderr_body),
+        *_render_footer(record, node_run, now),
+    ]
+
+
+def _render_header(start_event: Event) -> list[Text]:
+    """Render the node run name and its start time."""
+    return [
+        Text(_display_name(start_event), "bold"),
+        Text(f"started  {_local_time(start_event['time'])}", GREY),
+    ]
+
+
+def _render_status(record: _RunRecord, node_run: str, now: datetime | None) -> list[Text]:
+    """Render the end time, duration, and cost; `running…` or `interrupted` without an end."""
+    start_event, end_event = record.start_events[node_run], record.end_events.get(node_run)
+    if end_event is None:
+        elapsed = "interrupted" if now is None else f"running  {_elapsed(start_event, now)}…"
+        return [Text(elapsed, GREY)]
+    cost_line = f"cost     ${end_event['cost']:.2f}"
+    if "spent_cost" in end_event:
+        cost_line += f"  spent ${end_event['spent_cost']:.2f}"
+    return [
+        Text(
+            f"ended    {_local_time(end_event['time'])}  {_duration(start_event, end_event)}", GREY
+        ),
+        Text(cost_line, GREY),
+    ]
+
+
+def _render_footer(record: _RunRecord, node_run: str, now: datetime | None) -> list[Line]:
+    """Render the outcome and handoff sections."""
+    end_event = record.end_events.get(node_run)
+    return [
+        *_render_section("outcome", _render_outcome(record, node_run, now)),
+        *_render_section("handoff", _lines(end_event["handoff"] if end_event else None)),
     ]
 
 
@@ -95,122 +241,174 @@ def show_journal(directory: Path, with_nodes: bool, raw: bool) -> list[Text]:
     With `with_nodes`, every line starts with its origin. A node run's output precedes
     its end line; the output of a node run in progress precedes the last line.
     """
-    record = _read(directory)
-    rows = _rows(directory, record)
-    if not with_nodes:
-        return [line for _, line in rows]
-    lines: list[Text] = []
-    for e, line in rows:
-        if e is None:
-            for name in (n for n in record.starts if n not in record.ends):
-                lines += _block(directory, record, name, raw)
-        elif e["event"] == "end":
-            lines += _block(directory, record, e["node"], raw)
-        lines.append(_origin(WORKGRAPH_ORIGIN).append_text(line))
+    renderer = _JournalRenderer(directory, with_nodes, raw)
+    lines = list(renderer.render_lines(include_partial=True))
+    if not renderer.record.stop_event:
+        last_line = _render_last_line(renderer.record)
+        lines.append(_origin(WORKGRAPH_ORIGIN).append_text(last_line) if with_nodes else last_line)
     return lines
 
 
-def _rows(directory: Path, record: _Record) -> list[tuple[Event | None, Text]]:
-    """Render the journal events, each as `<local time>  <event text>`.
+def follow_journal(directory: Path, with_nodes: bool, raw: bool, until_end: bool) -> Iterator[Text]:
+    """Yield the journal lines as the run writes them; end after the stop line.
 
-    The event is None on the untimestamped last line of a run without a stop.
+    With `until_end`, only a stop with reason end ends the follow.
     """
-    rows: list[tuple[Event | None, Text]] = []
-    spent: dict[str, Any] = {}
-    stopped_at = ""
-    for e in record.events:
-        match e["event"]:
+    renderer = _JournalRenderer(directory, with_nodes, raw)
+    while True:
+        yield from renderer.render_lines()
+        stop_event = renderer.record.stop_event
+        if stop_event and (stop_event["reason"] == "end" or not until_end):
+            return
+        renderer.record.poll()
+
+
+class _JournalRenderer:
+    """Render the journal: one line per event, with the node run output under --with-nodes."""
+
+    def __init__(self, directory: Path, with_nodes: bool, raw: bool) -> None:
+        self.record = _RunRecord(directory)
+        self.with_nodes = with_nodes
+        self.raw = raw
+        self.rendered_count = 0
+        self.spent_amounts: dict[str, Any] = {}
+        self.stopped_at = ""
+        # The output readers of the node runs in progress, in start order.
+        self.output_readers: dict[str, tuple[_LineReader, _LineReader]] = {}
+
+    def render_lines(self, include_partial: bool = False) -> Iterator[Text]:
+        """Render the new events, then the new output of the node runs in progress.
+
+        The remaining output of a node run, a trailing partial line included, precedes its
+        end line, or the resume or stop line that follows its interruption. With include_partial,
+        a trailing partial line of a node run in progress renders as a line.
+        """
+        for event in self.record.events[self.rendered_count :]:
+            if not self.with_nodes:
+                yield self._render_row(event)
+                continue
+            match event["event"]:
+                case "end":
+                    closing_node_runs = [event["node"]]
+                case "resume" | "stop":
+                    closing_node_runs = list(self.output_readers)
+                case _:
+                    closing_node_runs = []
+            for node_run in closing_node_runs:
+                if node_run in self.output_readers:
+                    yield from self._render_output(node_run, include_partial=True)
+                    del self.output_readers[node_run]
+            yield _origin(WORKGRAPH_ORIGIN).append_text(self._render_row(event))
+            if event["event"] == "start" and "map" not in self.record.node(event["node"]):
+                self.output_readers[event["node"]] = _open_outputs(
+                    self.record.directory, event["node"]
+                )
+        self.rendered_count = len(self.record.events)
+        for node_run in self.output_readers:
+            yield from self._render_output(node_run, include_partial)
+
+    def _render_output(self, node_run: str, include_partial: bool) -> Iterator[Text]:
+        """Render the new lines of a node run's output: stdout, then stderr, each with its origin.
+
+        With include_partial, a trailing partial line renders as a line.
+        """
+        stdout_reader, stderr_reader = self.output_readers[node_run]
+        origin = _display_name(self.record.start_events[node_run])
+        stdout_lines = stdout_reader.read_lines(include_partial)
+        if self.record.is_transcript(node_run, self.raw):
+            for transcript_row in _render_transcript(stdout_lines):
+                yield _origin(origin).append_text(transcript_row)
+        else:
+            for stdout_line in stdout_lines:
+                yield _origin(origin).append(stdout_line)
+        for stderr_line in stderr_reader.read_lines(include_partial):
+            yield _origin(f"{origin} stderr").append(stderr_line)
+
+    def _render_row(self, event: Event) -> Text:
+        """Render one event as `<local time>  <event text>`."""
+        record = self.record
+        match event["event"]:
             case "run":
-                line = Text(f'run: {e["workflow"]} "{e["input"]}"')
+                event_text = Text(f'run: {event["workflow"]} "{event["input"]}"')
             case "start":
-                line = Text(f"{_display_name(e)}: started", GREY)
+                event_text = Text(f"{_display_name(event)}: started", GREY)
             case "end":
                 # A fanned-out end carries no spent amounts.
-                spent = {k: e[k] for k in ("spent_time", "spent_cost") if k in e} or spent
-                line = Text(f"{_display_name(e)}: ").append_text(_end_text(record, e["node"]))
-                line.append(f"  {_duration(record.starts[e['node']], e)}", GREY)
-                if "agent" in record.node(e["node"]) and "failure" not in e:
-                    line.append(f"  ${e['cost']:.2f}", GREY)
+                self.spent_amounts = {
+                    key: event[key] for key in ("spent_time", "spent_cost") if key in event
+                } or self.spent_amounts
+                event_text = Text(f"{_display_name(event)}: ").append_text(
+                    _end_text(record, event["node"])
+                )
+                event_text.append(f"  {_duration(record.start_events[event['node']], event)}", GREY)
+                if "agent" in record.node(event["node"]) and "failure" not in event:
+                    event_text.append(f"  ${event['cost']:.2f}", GREY)
             case "limit":
-                line = Text(f"{e['node']}: LIMIT → {e['target']}", "yellow")
+                event_text = Text(f"{event['node']}: LIMIT → {event['target']}", "yellow")
             case "resume":
-                if e.get("decision"):
-                    line = Text(f"{stopped_at}: {e['decision']}", DECISION_STYLE[e["decision"]])
+                if event.get("decision"):
+                    event_text = Text(
+                        f"{self.stopped_at}: {event['decision']}", DECISION_STYLE[event["decision"]]
+                    )
                 else:
-                    line = Text("resumed", GREY)
-                if "add_time" in e:
-                    line.append(f"  +{format_duration(e['add_time'])}", GREY)
-                if "add_cost" in e:
-                    line.append(f"  +${e['add_cost']:.2f}", GREY)
+                    event_text = Text("resumed", GREY)
+                if "add_time" in event:
+                    event_text.append(f"  +{format_duration(event['add_time'])}", GREY)
+                if "add_cost" in event:
+                    event_text.append(f"  +${event['add_cost']:.2f}", GREY)
             case "stop":
-                state = {"node": e["node"], **spent}
-                question = record.nodes[e["node"]].get("gate")
-                stopped_at = e["node"]
-                line = stop_line(state, e["reason"], question)
-        rows.append((e, Text().append(_time_column(e["time"]), GREY).append_text(line)))
-    if record.events[-1]["event"] != "stop":
-        rows.append((None, _last_line(directory, record)))
-    return rows
+                run_state = {"node": event["node"], **self.spent_amounts}
+                question = record.nodes[event["node"]].get("gate")
+                self.stopped_at = event["node"]
+                event_text = stop_line(run_state, event["reason"], question)
+        return Text().append(_time_column(event["time"]), GREY).append_text(event_text)
+
+
+def _open_outputs(directory: Path, node_run: str) -> tuple[_LineReader, _LineReader]:
+    """Return the readers of a node run's stdout and stderr."""
+    return (
+        _LineReader(output_file(directory, node_run, "stdout")),
+        _LineReader(output_file(directory, node_run, "stderr")),
+    )
 
 
 def _time_column(time: str) -> str:
     return f"{_local_time(time)}  "
 
 
-def _last_line(directory: Path, record: _Record) -> Text:
+def _render_last_line(record: _RunRecord) -> Text:
     """Render the untimestamped last line of a run without a stop: running, or interrupted.
 
     A run interrupted before it wrote its state is at the workflow's start node.
     """
-    state = read_state(directory) or {"node": record.start}
-    in_progress = (directory / LOCK_FILE).exists()
-    line = running_line(state, record.events) if in_progress else stop_line(state, "interrupted")
-    return Text(" " * len(_time_column(record.events[0]["time"]))).append_text(line)
+    run_state = read_state(record.directory) or {"node": record.start_node}
+    last_line = (
+        running_line(run_state, record.events)
+        if record.in_progress
+        else stop_line(run_state, "interrupted")
+    )
+    return Text(" " * len(_time_column(record.events[0]["time"]))).append_text(last_line)
 
 
 def _origin(origin: str) -> Text:
     return Text(f"[{origin}] ", GREY)
 
 
-def _block(directory: Path, record: _Record, name: str, raw: bool) -> list[Text]:
-    """Render a node run's output: stdout, then stderr, every line with its origin."""
-    node = record.node(name)
-    if "map" in node:
-        return []
-    origin = _display_name(record.starts[name])
-    stdout = _output_lines(output_file(directory, name, "stdout"), "agent" in node and not raw)
-    stderr = _output_lines(output_file(directory, name, "stderr"), False)
-    return [_origin(origin).append_text(line) for line in stdout] + [
-        _origin(f"{origin} stderr").append_text(line) for line in stderr
-    ]
+def _resolve_node_run(node_run_identifier: str, starts: dict[str, Event]) -> str:
+    """Return the node run the identifier names.
 
-
-def _read(directory: Path) -> _Record:
-    """Read the journal and the workflow."""
-    events = read_journal(directory)
-    if not events:
-        raise RecordError(f"no run in {directory}")
-    workflow = load_workflow(events[0]["workflow"])
-    return _Record(
-        workflow["nodes"],
-        workflow["start"],
-        events,
-        {e["node"]: e for e in events if e["event"] == "start"},
-        {e["node"]: e for e in events if e["event"] == "end"},
-    )
-
-
-def _resolve(node_run: str, starts: dict[str, Event]) -> str:
-    """Return the node run named `<node>#<n>`, or the last node run of `<node>`."""
-    if node_run in starts:
-        return node_run
-    _, sep, n = node_run.rpartition("#")
-    if sep and n.isdigit():
-        raise RecordError(f"no node run '{node_run}'")
-    runs = [name for name in starts if node_name(name) == node_run]
-    if not runs:
-        raise RecordError(f"no node run of '{node_run}'")
-    return runs[-1]
+    The identifier is either a node run name `<node>#<n>`, which must be in the record,
+    or a node name `<node>`, which names the last node run of that node.
+    """
+    if node_run_identifier in starts:
+        return node_run_identifier
+    _, separator, counter = node_run_identifier.rpartition("#")
+    if separator and counter.isdigit():
+        raise RecordError(f"no node run '{node_run_identifier}'")
+    node_runs = [name for name in starts if node_name(name) == node_run_identifier]
+    if not node_runs:
+        raise RecordError(f"no node run of '{node_run_identifier}'")
+    return node_runs[-1]
 
 
 def _display_name(event: Event) -> str:
@@ -235,8 +433,12 @@ def _elapsed(started: Event, end: datetime) -> str:
     return format_duration((end - datetime.fromisoformat(started["time"])).total_seconds())
 
 
-def _section(title: str, body: Sequence[Line]) -> list[Line]:
-    return [Text(f"── {title} ──", GREY), *(body or [Text("(none)", GREY)]), Text()]
+def _render_heading(title: str) -> Text:
+    return Text(f"── {title} ──", GREY)
+
+
+def _render_section(title: str, body: Sequence[Line]) -> list[Line]:
+    return [_render_heading(title), *(body or [Text("(none)", GREY)]), Text()]
 
 
 def _lines(text: str | None) -> list[Text]:
@@ -256,46 +458,39 @@ def _input(run_input: str, handoff: dict[str, str] | None) -> list[Line]:
     return lines
 
 
-def _output_text(path: Path) -> str:
-    """Read a node run output file. Bytes that are not UTF-8 read as `�`."""
-    return path.read_bytes().decode(errors="replace")
-
-
-def _stream(path: Path, transcript: bool) -> Sequence[Line]:
-    """Return the node run output for show-node: a transcript, or the file unchanged.
-
-    The file gains a final newline when it lacks one.
-    """
-    text = _output_text(path)
-    if not text:
+def _render_whole_output(reader: _LineReader, is_transcript: bool) -> Sequence[Line]:
+    """Return the whole node run output for show-node; `(empty)` for an empty file."""
+    output_lines = reader.read_lines(include_partial=True)
+    if not output_lines:
         return [Text("(empty)", GREY)]
-    if transcript:
-        return _transcript(text)
-    return [text if text.endswith("\n") else text + "\n"]
+    return _render_output_lines(output_lines, is_transcript)
 
 
-def _output_lines(path: Path, transcript: bool) -> list[Text]:
-    """Return the node run output for --with-nodes, one Text per line: a transcript, or the file."""
-    text = _output_text(path)
-    return _transcript(text) if transcript else _lines(text)
+def _render_output_lines(lines: Sequence[str], is_transcript: bool) -> Sequence[Line]:
+    """Render output lines: a transcript, or the lines unchanged as one str ending in a newline."""
+    if is_transcript:
+        return _render_transcript(lines)
+    return ["\n".join(lines) + "\n"] if lines else []
 
 
-def _transcript(stdout: str) -> list[Text]:
+def _render_transcript(lines: Sequence[str]) -> list[Text]:
     """Render the text blocks and tool calls of stream-json lines. Drop every other line."""
-    rows: list[Text] = []
-    for line in stdout.splitlines():
+    transcript_rows: list[Text] = []
+    for line in lines:
         try:
-            event = json.loads(line)
+            stream_event = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if event.get("type") != "assistant":
+        if stream_event.get("type") != "assistant":
             continue
-        for block in event["message"]["content"]:
+        for block in stream_event["message"]["content"]:
             if block["type"] == "text":
-                rows += _lines(block["text"])
+                transcript_rows += _lines(block["text"])
             elif block["type"] == "tool_use" and block["name"] != "StructuredOutput":
-                rows.append(Text(f"▸ {block['name']}: {_tool_summary(block['input'])}", "bold"))
-    return rows
+                transcript_rows.append(
+                    Text(f"▸ {block['name']}: {_tool_summary(block['input'])}", "bold")
+                )
+    return transcript_rows
 
 
 def _tool_summary(tool_input: dict[str, Any]) -> str:
@@ -305,35 +500,44 @@ def _tool_summary(tool_input: dict[str, Any]) -> str:
     return textwrap.shorten(json.dumps(tool_input), 100, placeholder="...")
 
 
-def _outcome(record: _Record, name: str, now: datetime | None) -> list[Line]:
+def _render_outcome(record: _RunRecord, node_run: str, now: datetime | None) -> list[Line]:
     """Render the end text; a map node run lists its children."""
-    lines: list[Line] = [_outcome_text(record, name, now)]
-    if "map" in record.node(name):
+    outcome_lines: list[Line] = [_outcome_text(record, node_run, now)]
+    if "map" in record.node(node_run):
         # The children are the node runs started between the map node run's start and end.
-        first = record.events.index(record.starts[name]) + 1
-        last = record.events.index(record.ends[name]) if name in record.ends else len(record.events)
-        for child in (e for e in record.events[first:last] if e["event"] == "start"):
-            line = Text(f"  {_display_name(child)}  ").append_text(
-                _outcome_text(record, child["node"], now)
+        first_index = record.events.index(record.start_events[node_run]) + 1
+        last_index = (
+            record.events.index(record.end_events[node_run])
+            if node_run in record.end_events
+            else len(record.events)
+        )
+        child_starts = (
+            event for event in record.events[first_index:last_index] if event["event"] == "start"
+        )
+        for child_start in child_starts:
+            child_line = Text(f"  {_display_name(child_start)}  ").append_text(
+                _outcome_text(record, child_start["node"], now)
             )
-            if child["node"] in record.ends:
-                line.append(f"  {_duration(child, record.ends[child['node']])}", GREY)
-            lines.append(line)
-    return lines
+            if child_start["node"] in record.end_events:
+                child_end = record.end_events[child_start["node"]]
+                child_line.append(f"  {_duration(child_start, child_end)}", GREY)
+            outcome_lines.append(child_line)
+    return outcome_lines
 
 
-def _outcome_text(record: _Record, name: str, now: datetime | None) -> Text:
+def _outcome_text(record: _RunRecord, name: str, now: datetime | None) -> Text:
     """Render the end text. Without an end: `running <running time>…`, or `interrupted` without a lock."""
-    if name in record.ends:
+    if name in record.end_events:
         return _end_text(record, name)
     return Text(
-        "interrupted" if now is None else f"running {_elapsed(record.starts[name], now)}…", "bold"
+        "interrupted" if now is None else f"running {_elapsed(record.start_events[name], now)}…",
+        "bold",
     )
 
 
-def _end_text(record: _Record, name: str) -> Text:
+def _end_text(record: _RunRecord, name: str) -> Text:
     """Render the outcome and target. Color only coded outcomes: pass, fail, and failure."""
-    ended = record.ends[name]
+    ended = record.end_events[name]
     if "failure" in ended:
         return Text(f"failure: {ended['failure']}", "red")
     outcome = str(ended["outcome"])

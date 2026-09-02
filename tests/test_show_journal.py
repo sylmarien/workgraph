@@ -7,7 +7,6 @@ from typing import Any
 
 import pytest
 
-from tests.conftest import write
 from tests.test_show_node import (
     PLAN_HANDOFF,
     PLAN_STDOUT,
@@ -20,59 +19,7 @@ from tests.test_show_node import (
     write_record,
 )
 from workgraph.cli import main
-from workgraph.run import LOCK_FILE, RUN_DIR, STATE_FILE
-
-DEV = """
-start = "plan"
-
-[budget]
-cost = 1.0
-
-[defaults]
-harness = "claude"
-model = "opus"
-effort = "high"
-
-[nodes.plan]
-agent = "planner"
-outcomes = ["done"]
-
-[nodes.plan.transitions]
-done = "checks"
-
-[nodes.checks]
-map = ["lint", "test"]
-resolve = "all"
-
-[nodes.checks.limits]
-visits = 2
-
-[nodes.checks.transitions]
-pass = "ship"
-fail = "plan"
-LIMIT = "ship"
-
-[nodes.lint]
-command = "ruff check ."
-
-[nodes.test]
-agent = "tester"
-outcomes = ["pass"]
-
-[nodes.ship]
-gate = "Ship it?"
-
-[nodes.ship.transitions]
-accept = "pr"
-reject = "plan"
-
-[nodes.pr]
-agent = "publisher"
-outcomes = ["done"]
-
-[nodes.pr.transitions]
-done = "END"
-"""
+from workgraph.run import JOURNAL_FILE, LOCK_FILE, RUN_DIR, STATE_FILE
 
 DELIVERED = {"source": "plan", "text": PLAN_HANDOFF}
 # A loop through plan and checks, then a LIMIT diversion into the ship gate, which parks.
@@ -168,22 +115,14 @@ ENDED_OUTPUT = """2026-08-31T12:00:00+02:00  run: dev "issue #5"
 """
 
 
-@pytest.fixture
-def project(dirs: tuple[Path, Path], utc_plus_2: None) -> Path:
-    """Write the DEV workflow."""
-    project, _ = dirs
-    write(project, "dev", DEV)
-    return project
-
-
 def write_state(project: Path, **state: Any) -> None:
     (project / STATE_FILE).write_text(json.dumps({"workflow": "dev", **state}))
 
 
 def test_lists_every_event_with_its_local_time(
-    project: Path, capsys: pytest.CaptureFixture[str]
+    dev_project: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    write_record(project, ENDED)
+    write_record(dev_project, ENDED)
     assert main(["show-journal"]) == 0
     assert capsys.readouterr().out == ENDED_OUTPUT
 
@@ -217,18 +156,18 @@ FAILED = [
     ],
 )
 def test_every_stop_reason_ends_on_the_stop_line(
-    project: Path, capsys: pytest.CaptureFixture[str], events: list[dict[str, Any]], last: str
+    dev_project: Path, capsys: pytest.CaptureFixture[str], events: list[dict[str, Any]], last: str
 ) -> None:
-    write_record(project, events)
+    write_record(dev_project, events)
     assert main(["show-journal"]) == 0
     assert capsys.readouterr().out.endswith(f"\n{last}\n")
 
 
 def test_a_resume_without_a_decision_lists_its_grants(
-    project: Path, capsys: pytest.CaptureFixture[str]
+    dev_project: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    write_record(project, [*FAILED, event("resume", 400, add_time=300.0, add_cost=0.5)])
-    write_state(project, node="plan", spent_time=30, spent_cost=0.4213)
+    write_record(dev_project, [*FAILED, event("resume", 400, add_time=300.0, add_cost=0.5)])
+    write_state(dev_project, node="plan", spent_time=30, spent_cost=0.4213)
     assert main(["show-journal"]) == 0
     assert capsys.readouterr().out.endswith(
         "\n2026-08-31T12:06:40+02:00  resumed  +5m00s  +$0.50\n"
@@ -248,11 +187,11 @@ IN_PROGRESS = [
 
 
 def test_a_run_in_progress_ends_on_the_untimestamped_running_line(
-    project: Path, capsys: pytest.CaptureFixture[str]
+    dev_project: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    write_record(project, IN_PROGRESS)
-    write_state(project, node="checks", spent_time=99, spent_cost=1.0213)
-    (project / LOCK_FILE).touch()
+    write_record(dev_project, IN_PROGRESS)
+    write_state(dev_project, node="checks", spent_time=99, spent_cost=1.0213)
+    (dev_project / LOCK_FILE).touch()
     assert main(["show-journal"]) == 0
     out = capsys.readouterr().out
     assert re.search(
@@ -263,10 +202,10 @@ def test_a_run_in_progress_ends_on_the_untimestamped_running_line(
 
 
 def test_an_interrupted_run_ends_on_the_interrupted_line(
-    project: Path, capsys: pytest.CaptureFixture[str]
+    dev_project: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    write_record(project, IN_PROGRESS)
-    write_state(project, node="checks", spent_time=99, spent_cost=1.0213)
+    write_record(dev_project, IN_PROGRESS)
+    write_state(dev_project, node="checks", spent_time=99, spent_cost=1.0213)
     assert main(["show-journal"]) == 0
     assert capsys.readouterr().out.endswith(
         "\n"
@@ -276,9 +215,9 @@ def test_an_interrupted_run_ends_on_the_interrupted_line(
 
 
 def test_a_run_interrupted_before_its_state_names_the_start_node(
-    project: Path, capsys: pytest.CaptureFixture[str]
+    dev_project: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    write_record(project, PARKED[:1])
+    write_record(dev_project, PARKED[:1])
     assert main(["show-journal"]) == 0
     assert capsys.readouterr().out.endswith(
         "\n" + " " * len("2026-08-31T12:00:00+02:00  ") + "interrupted at plan · spent 0s\n"
@@ -306,10 +245,10 @@ WITH_NODES_OUTPUT = (
 
 
 @pytest.fixture
-def in_progress(project: Path) -> Path:
+def in_progress(dev_project: Path) -> Path:
     """The run in progress at plan#2, with command and agent output on disk."""
     write_record(
-        project,
+        dev_project,
         AT_PLAN_2,
         {
             "lint#1.stdout": "All checks passed!\n",
@@ -317,9 +256,9 @@ def in_progress(project: Path) -> Path:
             "plan#2.stdout": assistant(text_block("Working.")) + '\n{"type": "assis',
         },
     )
-    write_state(project, node="plan", spent_time=90, spent_cost=0.9213)
-    (project / LOCK_FILE).touch()
-    return project
+    write_state(dev_project, node="plan", spent_time=90, spent_cost=0.9213)
+    (dev_project / LOCK_FILE).touch()
+    return dev_project
 
 
 def test_with_nodes_prints_each_node_run_output_before_its_end_line(
@@ -354,20 +293,43 @@ def test_with_nodes_raw_prints_the_stream_json_lines(
     assert '[plan#2] {"type": "assis\n' in out
 
 
-def test_no_run_is_an_error(dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]) -> None:
+def test_with_nodes_prints_an_interrupted_node_run_output_before_the_resume_line(
+    dev_project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_record(
+        dev_project,
+        [*PLAN_1_STARTED, event("resume", 40, add_time=300.0), start("plan#2", 40)],
+        {"plan#1.stdout": 'Working.\n{"type": "assis'},
+    )
+    (dev_project / LOCK_FILE).touch()
+    assert main(["show-journal", "--with-nodes", "--raw"]) == 0
+    assert (
+        '[plan#1] Working.\n[plan#1] {"type": "assis\n'
+        "[workgraph#] 2026-08-31T12:00:40+02:00  resumed  +5m00s\n"
+        "[workgraph#] 2026-08-31T12:00:40+02:00  plan#2: started\n"
+        "[workgraph#] " in capsys.readouterr().out
+    )
+
+
+@pytest.mark.parametrize("journal", [None, ""])
+def test_no_run_is_an_error(
+    dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str], journal: str | None
+) -> None:
     project, _ = dirs
     (project / RUN_DIR).mkdir(parents=True)
+    if journal is not None:
+        (project / JOURNAL_FILE).write_text(journal)
     assert main(["show-journal"]) == 1
     assert capsys.readouterr().err == "no run in .\n"
 
 
 def test_colors_on_a_terminal(
-    project: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    dev_project: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("FORCE_COLOR", "1")
     monkeypatch.setenv("TERM", "xterm-256color")
     monkeypatch.delenv("COLORTERM", raising=False)
-    write_record(project, ENDED)
+    write_record(dev_project, ENDED)
     assert main(["show-journal"]) == 0
     out = capsys.readouterr().out
     assert (

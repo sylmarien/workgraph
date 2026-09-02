@@ -261,6 +261,11 @@ def _check_decision(node: str, parked: bool, decision: str | None, feedback: str
         raise DecisionError("--decision accept does not take --feedback")
 
 
+def is_in_progress(directory: Path) -> bool:
+    """Return whether a run holds the lock in the directory."""
+    return (directory / LOCK_FILE).exists()
+
+
 @contextmanager
 def _lock(directory: Path) -> Iterator[None]:
     lock = directory / LOCK_FILE
