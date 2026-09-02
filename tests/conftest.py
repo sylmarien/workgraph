@@ -3,12 +3,40 @@
 import json
 import os
 import time
-from collections.abc import Iterator
+from collections import deque
+from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 
 from workgraph.run import STATE_FILE
+
+QueuedStep = Callable[[], None]
+
+
+@pytest.fixture
+def queue_steps(monkeypatch: pytest.MonkeyPatch) -> Iterator[Callable[..., None]]:
+    """Return a function queuing the steps a thread runs, one per follower sleep.
+
+    The patched sleep runs the next step on the thread and waits for it to end.
+    A sleep past the last step fails the test instead of hanging.
+    """
+    steps: deque[QueuedStep] = deque()
+
+    def poll(_seconds: float) -> None:
+        if not steps:
+            raise TimeoutError("the follow polled past the last step")
+        writer_thread.submit(steps.popleft()).result()
+
+    def queue(*new_steps: QueuedStep) -> None:
+        steps.extend(new_steps)
+
+    with ThreadPoolExecutor(max_workers=1) as writer_thread:
+        monkeypatch.setattr(time, "sleep", poll)
+        yield queue
+    assert not steps, "the follow ended before the last step"
+
 
 MINIMAL = """
 start = "check"

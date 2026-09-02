@@ -112,10 +112,14 @@ class _RunRecord:
 
     def poll(self) -> None:
         """Sleep one poll interval, then read. An interrupted run ends the follow."""
-        if not self.in_progress and not self.stop_event:
-            raise RecordError("the run stopped without a stop event")
+        self.check_interrupted()
         time.sleep(POLL_INTERVAL)
         self.read_events()
+
+    def check_interrupted(self) -> None:
+        """Raise when the run exited without writing its stop event."""
+        if not self.in_progress and not self.stop_event:
+            raise RecordError("the run stopped without a stop event")
 
     def node(self, node_run: str) -> dict[str, Any]:
         return self.nodes[node_name(node_run)]

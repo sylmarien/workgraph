@@ -132,6 +132,18 @@ Requires Python 3.12+. Agent nodes additionally require the `claude` CLI on
 
   `--with-nodes --follow` prints the output of every node run in progress
   as it arrives.
+
+  `--graph` draws the run's path as a vertical chain instead of the event
+  lines: a header `run: <workflow> "<input>" · spent <t> · $<c> · <state>`
+  (`$<c>` only when non-zero), then one row per node run in journal order
+  with its glyph, name, duration, and `$<cost>` for an agent node run, the
+  outcome on an edge row `│ <outcome>`, and fan-outs to the right, one child
+  per row. Glyphs: `◇` ended agent node run, `✓` coded pass, `✗` coded fail
+  or failure, `◆` current, `⬡` gate, `┆ <node> → LIMIT` diversion, `⚠`
+  escalation or budget. The chain ends on `END`, `✗ failure: <message>`, or
+  `⚠ <reason> at <node>`. `--graph --follow` needs a terminal and redraws
+  the chain in place every 0.1 s, the current glyph fading on a 2 s sine
+  period, until the run stops; the last frame shows the final state.
 - `workgraph viz <workflow>` — print the workflow graph. `--unicode`
   (default), `--ascii`, or `--mermaid` for the mermaid source. The unicode and
   ascii styles widen the diagram to the terminal width. `--theme <name>` picks
