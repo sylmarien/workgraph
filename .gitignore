@@ -7,3 +7,4 @@ __pycache__/
 dist/
 .workgraph/run/
 .workgraph/run.lock
+.workgraph/run.json
