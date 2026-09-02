@@ -1,8 +1,11 @@
 {
   "attribution": {
-    "commit": "",
-    "pr": "",
+    "commit": false,
+    "pr": false,
     "sessionUrl": false
+  },
+  "thinking": {
+    "display": "updates"
   },
   "enabledPlugins": {
     "mattpocock-skills@mattpocock": true,
