@@ -7,9 +7,11 @@ from pathlib import Path
 
 from rich.cells import cell_len
 from rich.console import Console
+from rich.text import Text
 from termaid import render_rich
 from termaid.renderer.themes import THEMES
 
+from workgraph.graph import follow_graph, show_graph
 from workgraph.run import (
     BudgetStop,
     DecisionError,
@@ -64,7 +66,7 @@ def main(argv: list[str] | None = None) -> int:
         case "show-node":
             return _report(lambda: _print_lines(_get_node_lines(args)))
         case "show-journal":
-            return _report(lambda: _print_lines(_get_journal_lines(args)))
+            return _show_journal_command(args)
         case "viz":
             return _viz(args)
         case _:
@@ -151,6 +153,11 @@ def _add_show_journal_parser(
         "--until-end",
         action="store_true",
         help="Follow through parks and other stops until END; implies --follow.",
+    )
+    show.add_argument(
+        "--graph",
+        action="store_true",
+        help="Draw the run's path as a chain instead of the event lines.",
     )
 
 
@@ -274,6 +281,30 @@ def _get_journal_lines(args: argparse.Namespace) -> Iterable[Line]:
     if args.follow or args.until_end:
         return follow_journal(args.directory, args.with_nodes, args.raw, args.until_end)
     return show_journal(args.directory, args.with_nodes, args.raw)
+
+
+def _show_journal_command(args: argparse.Namespace) -> int:
+    if not args.graph:
+        return _report(lambda: _print_lines(_get_journal_lines(args)))
+    if not (args.follow or args.until_end):
+        return _report(lambda: _print_lines(show_graph(args.directory)))
+    if not sys.stdout.isatty():
+        print("--graph --follow needs a terminal", file=sys.stderr)
+        return 1
+    return _report(lambda: _print_frames(follow_graph(args.directory, args.until_end)))
+
+
+def _print_frames(frames: Iterable[list[Text]]) -> None:
+    """Redraw each frame in place: cursor home, the lines each cleared to its end, clear below."""
+    console = Console()
+    sys.stdout.write("\x1b[2J")
+    for frame in frames:
+        sys.stdout.write("\x1b[H")
+        for line in frame:
+            console.print(line, soft_wrap=True, end="")
+            sys.stdout.write("\x1b[K\n")
+        sys.stdout.write("\x1b[J")
+        sys.stdout.flush()
 
 
 def _print_lines(lines: Iterable[Line]) -> None:

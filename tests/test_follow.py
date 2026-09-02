@@ -5,10 +5,7 @@ import json
 import os
 import shutil
 import signal
-import time
-from collections import deque
-from collections.abc import Callable, Iterator
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -19,31 +16,6 @@ from tests.test_show_node import assistant, end, event, text_block, tool_use, wr
 from workgraph import show
 from workgraph.cli import main
 from workgraph.run import JOURNAL_FILE, LOCK_FILE, RUN_DIR, is_in_progress
-
-Step = Callable[[], None]
-
-
-@pytest.fixture(autouse=True)
-def queue_steps(monkeypatch: pytest.MonkeyPatch) -> Iterator[Callable[..., None]]:
-    """Return a function queuing the steps a thread runs, one per follower poll.
-
-    The patched sleep runs the next step on the thread and waits for it to end.
-    A poll past the last step fails the test instead of hanging.
-    """
-    steps: deque[Step] = deque()
-
-    def poll(_seconds: float) -> None:
-        if not steps:
-            raise TimeoutError("the follow polled past the last step")
-        writer_thread.submit(steps.popleft()).result()
-
-    def queue(*new_steps: Step) -> None:
-        steps.extend(new_steps)
-
-    with ThreadPoolExecutor(max_workers=1) as writer_thread:
-        monkeypatch.setattr(time, "sleep", poll)
-        yield queue
-    assert not steps, "the follow ended before the last step"
 
 
 def append_events(project: Path, *events: dict[str, Any]) -> None:
