@@ -10,6 +10,11 @@ Implement the work the user names, following the process below. This
 process is for interactive sessions; the `dev` workflow runs its own nodes
 for testing, review, and the PR.
 
+## Starting point
+
+- **Before starting any work, fetch `origin/main` and check that the current branch contains it.** Run `git fetch origin main`, then `git log HEAD..origin/main --oneline`. Any output means the branch is behind.
+- **When the branch is behind, update it before touching any file.** Rebase a feature branch onto `origin/main`; fast-forward when on `main`. The work starts only from a branch that includes the latest `origin/main`.
+
 ## Pull requests
 
 - **Open a PR whenever a piece of work is finished** — don't wait to be asked. "Finished" is defined below.
