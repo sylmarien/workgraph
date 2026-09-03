@@ -6,7 +6,7 @@ import shutil
 import subprocess
 import threading
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -597,7 +597,7 @@ def _run_agent(
 ) -> tuple[str, str | None, float]:
     """Run the agent; return its outcome, handoff, and the USD cost the harness reported.
 
-    The agent's stdout holds one stream-json event per line; the last line is the result.
+    The agent's stdout holds one stream-json event per line; one of them is the result.
     """
     name = node_name(node_run)
     # The definition resolves from the invocation directory (the process cwd);
@@ -612,10 +612,10 @@ def _run_agent(
     if completed.returncode != 0:
         raise NodeFailure(f"node '{name}': agent exited with code {completed.returncode}")
     lines = output_file(directory, node_run, "stdout").read_text().splitlines()
-    try:
-        result = json.loads(lines[-1] if lines else "")
-    except json.JSONDecodeError as error:
-        raise NodeFailure(f"node '{name}': agent output is not JSON: {error}") from error
+    results = [event for event in iter_stream_events(lines) if event.get("type") == "result"]
+    if not results:
+        raise NodeFailure(f"node '{name}': agent output holds no result event")
+    result = results[-1]
     try:
         cost = float(result.get("total_cost_usd") or 0)
     except (TypeError, ValueError):
@@ -624,11 +624,21 @@ def _run_agent(
     if result.get("is_error"):
         raise NodeFailure(f"node '{name}': agent reported an error", cost)
     output = result.get("structured_output")
-    outcome = output.get("outcome") if isinstance(output, dict) else None
-    if outcome not in node["outcomes"]:
+    if not isinstance(output, dict) or output.get("outcome") not in node["outcomes"]:
         raise NodeFailure(f"node '{name}': agent reported no outcome from {node['outcomes']}", cost)
     handoff_text = output.get("handoff")
-    return str(outcome), str(handoff_text) if handoff_text is not None else None, cost
+    return output["outcome"], str(handoff_text) if handoff_text is not None else None, cost
+
+
+def iter_stream_events(lines: Iterable[str]) -> Iterator[dict[str, Any]]:
+    """Yield the JSON objects among stream-json lines; drop every other line."""
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict):
+            yield event
 
 
 def _agent_argv(

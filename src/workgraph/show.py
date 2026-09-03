@@ -16,6 +16,7 @@ from workgraph.run import (
     JOURNAL_FILE,
     format_duration,
     is_in_progress,
+    iter_stream_events,
     node_name,
     output_file,
     read_state,
@@ -480,11 +481,7 @@ def _render_output_lines(lines: Sequence[str], is_transcript: bool) -> Sequence[
 def _render_transcript(lines: Sequence[str]) -> list[Text]:
     """Render the text blocks and tool calls of stream-json lines. Drop every other line."""
     transcript_rows: list[Text] = []
-    for line in lines:
-        try:
-            stream_event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
+    for stream_event in iter_stream_events(lines):
         if stream_event.get("type") != "assistant":
             continue
         for block in stream_event["message"]["content"]:
