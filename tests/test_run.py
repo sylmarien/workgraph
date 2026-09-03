@@ -1752,9 +1752,9 @@ def test_grants_accumulate_across_resumes(
     capsys.readouterr()
     assert read_project_state()["added_time"] == pytest.approx(0.6)
     assert main(["status"]) == 0
-    out = capsys.readouterr().out
-    assert out.startswith("budget at wait · spent ")
-    assert out.endswith(
+    output = capsys.readouterr().out
+    assert output.startswith("budget at wait · spent ")
+    assert output.endswith(
         "node 'wait': soft time limit of 0.7 s reached\nspent time: 1 s\nsoft limit: 0.7 s\n"
     )
 

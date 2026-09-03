@@ -54,16 +54,16 @@ def build_event(kind: str, offset_seconds: int, **fields: Any) -> dict[str, Any]
 
 
 def build_start_event(
-    node_run: str, offset_seconds: int, handoff: dict[str, str] | None = None, **fields: Any
+    node_run_name: str, offset_seconds: int, handoff: dict[str, str] | None = None, **fields: Any
 ) -> dict[str, Any]:
-    return build_event("start", offset_seconds, node=node_run, handoff=handoff, **fields)
+    return build_event("start", offset_seconds, node=node_run_name, handoff=handoff, **fields)
 
 
-def build_end_event(node_run: str, offset_seconds: int, **fields: Any) -> dict[str, Any]:
+def build_end_event(node_run_name: str, offset_seconds: int, **fields: Any) -> dict[str, Any]:
     return build_event(
         "end",
         offset_seconds,
-        node=node_run,
+        node=node_run_name,
         **{"handoff": None, "target": None, "map": None, **fields},
     )
 
@@ -246,8 +246,8 @@ def test_raw_prints_the_stream_json_file_unchanged(
     stdout = PLAN_STDOUT + "partial\r\t"
     write_record(recorded_project, TEST_2_ENDED_EVENTS, {"plan#1.stdout": stdout})
     assert main(["show-node", "--raw", "plan#1"]) == 0
-    out = capsys.readouterr().out
-    stdout_section = out.partition("── stdout ──\n")[2].partition("\n── stderr ──")[0]
+    output = capsys.readouterr().out
+    stdout_section = output.partition("── stdout ──\n")[2].partition("\n── stderr ──")[0]
     # The file lacks a final newline; show-node adds one so the next section starts on its own line.
     assert stdout_section == stdout + "\n"
 
@@ -343,9 +343,9 @@ def test_failure_shows_in_the_outcome_and_the_fanned_out_node_runs(
     recorded_project: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert main(["show-node", "test#1"]) == 0
-    out = capsys.readouterr().out
-    assert out.startswith("checks/test#1\n")
-    assert "\n── outcome ──\nfailure: node 'test': agent reported an error\n" in out
+    output = capsys.readouterr().out
+    assert output.startswith("checks/test#1\n")
+    assert "\n── outcome ──\nfailure: node 'test': agent reported an error\n" in output
     assert main(["show-node", "checks#1"]) == 0
     assert (
         capsys.readouterr().out.partition("── outcome ──\n")[2]
@@ -364,9 +364,9 @@ def test_node_alone_names_its_last_node_run(
     recorded_project: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert main(["show-node", "plan"]) == 0
-    out = capsys.readouterr().out
-    assert out.startswith("plan#2\n")
-    assert f"── input ──\nissue #5\n\nHandoff from checks:\n{CHECKS_HANDOFF}\n" in out
+    output = capsys.readouterr().out
+    assert output.startswith("plan#2\n")
+    assert f"── input ──\nissue #5\n\nHandoff from checks:\n{CHECKS_HANDOFF}\n" in output
 
 
 def test_node_run_in_progress_shows_running_and_exits_zero(
@@ -378,13 +378,13 @@ def test_node_run_in_progress_shows_running_and_exits_zero(
         build_assistant_event(build_text_block("Working.")) + '\n{"type": "assis'
     )
     assert main(["show-node", "test"]) == 0
-    out = capsys.readouterr().out
+    output = capsys.readouterr().out
     assert re.match(
         r"checks/test#2\nstarted  2026-08-31T12:01:40\+02:00\nrunning  \S+…\n\n── input ──\n",
-        out,
+        output,
     )
-    assert "\n── stdout ──\nWorking.\n\n── stderr ──\n(empty)\n\n── outcome ──\nrunning " in out
-    assert out.endswith("…\n\n── handoff ──\n(none)\n\n")
+    assert "\n── stdout ──\nWorking.\n\n── stderr ──\n(empty)\n\n── outcome ──\nrunning " in output
+    assert output.endswith("…\n\n── handoff ──\n(none)\n\n")
 
 
 def test_map_node_run_in_progress_lists_its_fanned_out_node_runs(
@@ -406,9 +406,9 @@ def test_an_interrupted_node_run_shows_interrupted_without_a_duration(
 ) -> None:
     write_record(recorded_project, TEST_2_RUNNING_EVENTS)
     assert main(["show-node", "test"]) == 0
-    out = capsys.readouterr().out
-    assert out.startswith("checks/test#2\nstarted  2026-08-31T12:01:40+02:00\ninterrupted\n\n")
-    assert out.endswith("\n── outcome ──\ninterrupted\n\n── handoff ──\n(none)\n\n")
+    output = capsys.readouterr().out
+    assert output.startswith("checks/test#2\nstarted  2026-08-31T12:01:40+02:00\ninterrupted\n\n")
+    assert output.endswith("\n── outcome ──\ninterrupted\n\n── handoff ──\n(none)\n\n")
 
 
 def test_an_interrupted_map_node_run_lists_its_fanned_out_node_runs(
@@ -461,7 +461,7 @@ def test_secondary_text_is_grey66_on_a_terminal(
     monkeypatch.setenv("TERM", "xterm-256color")
     monkeypatch.delenv("COLORTERM", raising=False)
     assert main(["show-node", "lint#1"]) == 0
-    out = capsys.readouterr().out
-    assert "\x1b[38;5;248m── input ──\x1b[0m" in out
-    assert "\x1b[32mpass\x1b[0m" in out
-    assert "\x1b[2m" not in out
+    output = capsys.readouterr().out
+    assert "\x1b[38;5;248m── input ──\x1b[0m" in output
+    assert "\x1b[32mpass\x1b[0m" in output
+    assert "\x1b[2m" not in output
