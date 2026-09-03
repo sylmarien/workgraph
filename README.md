@@ -10,7 +10,10 @@ This repository runs its own workflow, `.workgraph/workflows/dev.toml`:
 
 ```mermaid
 flowchart TD
-    implement([implement])
+    plan([plan])
+    plan -->|done| approve-plan
+    approve-plan -->|accept| implement
+    approve-plan -->|reject| plan
     implement -->|done| test
     test -->|pass| review
     test -->|fail| implement
@@ -224,8 +227,8 @@ A workflow lives in `.workgraph/workflows/<name>.toml`; the filename is the
 workflow name. `workgraph` searches the invocation directory, then the home
 directory, and takes the first match. A project workflow therefore shadows a
 personal one of the same name. `.workgraph/workflows/dev.toml` in this
-repository is a full example with three of the four node kinds; the reference
-below uses two nodes.
+repository is a full example with the four node kinds; the reference below
+uses two nodes.
 
 ```toml
 start = "implement"          # entry node, required
@@ -443,10 +446,15 @@ passed verbatim as one argument.
      lines of its `stdout` section, or, on escalation, the `outcome` and
      `handoff` sections of the node of the last progress line; offer to run
      `workgraph resume` with the same `--directory`.
-   - 4 (park): the gate question and the review material; ask the user for
-     a decision, then run `workgraph resume --decision accept` or
-     `workgraph resume --decision reject --feedback "<text>"` with the same
-     `--directory`.
+   - 4 (park): the gate question and the review material, then ask the
+     user for a decision. The user may discuss the review material over
+     several turns; never decide in their place. On accept, run
+     `workgraph resume --decision accept`. On reject, draft the feedback
+     from the changes the user asked for, show the draft, and wait for the
+     user's confirmation before running
+     `workgraph resume --decision reject --feedback "<text>"`. Use the same
+     `--directory`, run the resume in the background like the run, then
+     relay its progress lines and report its stop the same way.
    - 1: the error line. Nothing is resumable.
 ````
 

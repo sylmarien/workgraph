@@ -1,12 +1,28 @@
-start = "implement"
+start = "plan"
 
 [defaults]
 harness = "claude"
-model = "fable"
+model = "claude-fable-5-1"
 effort = "high"
+
+[nodes.plan]
+agent = "plan"
+effort = "xhigh"
+outcomes = ["done"]
+
+[nodes.plan.transitions]
+done = "approve-plan"
+
+[nodes.approve-plan]
+gate = "Implement this plan?"
+
+[nodes.approve-plan.transitions]
+accept = "implement"
+reject = "plan"
 
 [nodes.implement]
 agent = "implement"
+model = "claude-opus-5"
 outcomes = ["done"]
 
 [nodes.implement.transitions]

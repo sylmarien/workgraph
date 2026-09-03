@@ -188,7 +188,11 @@ def test_bundled_dev_workflow_declares_the_review_fan_out(
 ) -> None:
     monkeypatch.chdir(Path(__file__).parent.parent)
     workflow = load_workflow("dev")
-    assert workflow["defaults"] == {"harness": "claude", "model": "fable", "effort": "high"}
+    assert workflow["defaults"] == {
+        "harness": "claude",
+        "model": "claude-fable-5-1",
+        "effort": "high",
+    }
     review = workflow["nodes"]["review"]
     assert review["map"] == ["code-review", "overengineering-review"]
     assert review["resolve"] == "all"
