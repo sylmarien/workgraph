@@ -1,7 +1,8 @@
 # workgraph
 
-workgraph orchestrates development workflows declared as graphs. The README
-describes the commands, the workflow file format, and the agent definitions.
+workgraph orchestrates development workflows declared as graphs. The
+reference pages are `docs/commands.md`, `docs/workflow-files.md`, and
+`docs/agent-definitions.md`.
 The domain language lives in `CONTEXT.md`.
 
 ## Agent skills
