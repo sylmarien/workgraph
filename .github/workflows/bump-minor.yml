@@ -1,8 +1,7 @@
-name: Release
+name: Bump minor version
 
 on:
-  push:
-    branches: [main]
+  workflow_dispatch: {}
 
 permissions:
   contents: write
@@ -19,7 +18,7 @@ jobs:
           fetch-depth: 0
       - uses: astral-sh/setup-uv@v6
       - run: uv sync
-      - run: uv run semantic-release version --skip-build
+      - run: uv run semantic-release version --minor --skip-build
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PYTHONPATH: .
