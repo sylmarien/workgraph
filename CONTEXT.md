@@ -63,7 +63,7 @@ The files a run leaves under `.workgraph/run/`: the state, the journal, and ever
 _Avoid_: Logs, artifacts, history
 
 **Node run output**:
-The stdout and stderr the process of a node run writes. workgraph keeps them for inspection. A map node run and a gate node run have none.
+The stdout and stderr the process of a node run writes. workgraph keeps them for observation. A map node run and a gate node run have none.
 _Avoid_: Logs, capture
 
 **Transcript**:
@@ -78,8 +78,12 @@ _Avoid_: Log, history, trace
 The prefix show-journal `--with-nodes` puts on every line to name its source: `[<node run>] ` for stdout, `[<node run> stderr] ` for stderr, `[workgraph#] ` for a journal event.
 _Avoid_: Tag, label, source column
 
+**Observe**:
+Reading the run record while or after a run: `status`, `show-node`, `show-journal`, and the follows. Observing never writes the run record.
+_Avoid_: Inspect, monitor
+
 **Follow**:
-Keeping an inspection view current while the run writes. A follow ends when the run stops or the followed node run ends.
+Keeping an observed view current while the run writes. A follow ends when the run stops or the followed node run ends.
 _Avoid_: Tail, watch, attach
 
 **In progress**:
