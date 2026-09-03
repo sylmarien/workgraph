@@ -20,18 +20,18 @@ from workgraph.run import (
     NothingToResume,
     Park,
     RunInProgress,
-    cost_limit,
+    compute_cost_limit,
+    compute_time_limits,
     echo,
+    format_review_material,
+    format_running_line,
+    format_stop_line,
     is_in_progress,
     load_state,
-    park_report,
     read_journal,
     read_state,
     resume_run,
     run_workflow,
-    running_line,
-    stop_line,
-    time_limits,
 )
 from workgraph.show import (
     Line,
@@ -48,7 +48,7 @@ from workgraph.workflow import (
     load_workflow,
     parse_cost,
     parse_duration,
-    to_mermaid,
+    render_mermaid,
 )
 
 
@@ -62,13 +62,13 @@ def main(argv: list[str] | None = None) -> int:
         case "resume":
             return _resume(args)
         case "status":
-            return _status(args)
+            return _print_status(args)
         case "show-node":
             return _report(lambda: _print_lines(_get_node_lines(args)))
         case "show-journal":
             return _show_journal_command(args)
         case "viz":
-            return _viz(args)
+            return _print_viz(args)
         case _:
             parser.print_help()
             return 0
@@ -78,7 +78,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="workgraph", description="Graph workflow orchestrator.")
     parser.add_argument(
         "--directory",
-        type=_directory,
+        type=_parse_directory_argument,
         default=Path("."),
         help="Directory the run executes in and stores its state in;"
         " workflow and agent files still resolve from the invocation directory.",
@@ -94,38 +94,42 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _add_resume_parser(subparsers: "argparse._SubParsersAction[argparse.ArgumentParser]") -> None:
-    resume = subparsers.add_parser(
+    resume_parser = subparsers.add_parser(
         "resume", help="Resume a stopped run, or deliver a decision to a parked one."
     )
-    resume.add_argument(
-        "--decision", choices=["accept", "reject"], help="Decision for the gate the run parked at."
+    resume_parser.add_argument(
+        "--decision",
+        choices=["accept", "reject"],
+        help="Decision for the gate the run parked at.",
     )
-    resume.add_argument("--feedback", help="Feedback delivered with a reject.")
-    resume.add_argument(
+    resume_parser.add_argument("--feedback", help="Feedback delivered with a reject.")
+    resume_parser.add_argument(
         "--add-time",
-        type=_duration,
+        type=_parse_duration_argument,
         help="Grant the run more time: seconds, or a number with unit s, m, or h.",
     )
-    resume.add_argument("--add-cost", type=_cost, help="Grant the run more cost, in USD.")
+    resume_parser.add_argument(
+        "--add-cost", type=_parse_cost_argument, help="Grant the run more cost, in USD."
+    )
 
 
 def _add_run_parser(subparsers: "argparse._SubParsersAction[argparse.ArgumentParser]") -> None:
-    run = subparsers.add_parser("run", help="Run a workflow.")
-    run.add_argument("workflow", help="Workflow name.")
-    run.add_argument("input", help="Run input, typically an issue ref.")
+    run_parser = subparsers.add_parser("run", help="Run a workflow.")
+    run_parser.add_argument("workflow", help="Workflow name.")
+    run_parser.add_argument("input", help="Run input, typically an issue ref.")
 
 
 def _add_show_node_parser(
     subparsers: "argparse._SubParsersAction[argparse.ArgumentParser]",
 ) -> None:
-    show = subparsers.add_parser(
+    show_node_parser = subparsers.add_parser(
         "show-node", help="Review one node run of the run in the directory."
     )
-    show.add_argument("node_run", help="<node>#<n>, or <node> for its last node run.")
-    show.add_argument(
+    show_node_parser.add_argument("node_run", help="<node>#<n>, or <node> for its last node run.")
+    show_node_parser.add_argument(
         "--raw", action="store_true", help="Print agent stdout as the stream-json lines."
     )
-    show.add_argument(
+    show_node_parser.add_argument(
         "--follow",
         action="store_true",
         help="Keep printing the node run's output until it ends; its stderr goes to stderr.",
@@ -135,26 +139,28 @@ def _add_show_node_parser(
 def _add_show_journal_parser(
     subparsers: "argparse._SubParsersAction[argparse.ArgumentParser]",
 ) -> None:
-    show = subparsers.add_parser(
+    show_journal_parser = subparsers.add_parser(
         "show-journal", help="List the events of the run in the directory."
     )
-    show.add_argument(
+    show_journal_parser.add_argument(
         "--with-nodes",
         action="store_true",
         help="Print every node run's output before its end line, each line with its origin.",
     )
-    show.add_argument(
+    show_journal_parser.add_argument(
         "--raw", action="store_true", help="Print agent stdout as the stream-json lines."
     )
-    show.add_argument(
-        "--follow", action="store_true", help="Keep printing the events until the run stops."
+    show_journal_parser.add_argument(
+        "--follow",
+        action="store_true",
+        help="Keep printing the events until the run stops.",
     )
-    show.add_argument(
+    show_journal_parser.add_argument(
         "--until-end",
         action="store_true",
         help="Follow through parks and other stops until END; implies --follow.",
     )
-    show.add_argument(
+    show_journal_parser.add_argument(
         "--graph",
         action="store_true",
         help="Draw the run's path as a chain instead of the event lines.",
@@ -162,69 +168,69 @@ def _add_show_journal_parser(
 
 
 def _add_viz_parser(subparsers: "argparse._SubParsersAction[argparse.ArgumentParser]") -> None:
-    viz = subparsers.add_parser("viz", help="Print a workflow graph.")
-    viz.add_argument("workflow", help="Workflow name.")
-    style = viz.add_mutually_exclusive_group()
-    style.add_argument(
+    viz_parser = subparsers.add_parser("viz", help="Print a workflow graph.")
+    viz_parser.add_argument("workflow", help="Workflow name.")
+    style_group = viz_parser.add_mutually_exclusive_group()
+    style_group.add_argument(
         "--unicode",
         dest="style",
         action="store_const",
         const="unicode",
         help="Render with Unicode box drawing (default).",
     )
-    style.add_argument(
+    style_group.add_argument(
         "--ascii",
         dest="style",
         action="store_const",
         const="ascii",
         help="Render with ASCII characters.",
     )
-    style.add_argument(
+    style_group.add_argument(
         "--mermaid",
         dest="style",
         action="store_const",
         const="mermaid",
         help="Print the mermaid source.",
     )
-    viz.add_argument(
+    viz_parser.add_argument(
         "--theme",
         choices=sorted(THEMES),
         default="default",
         help="Color theme for the unicode and ascii styles.",
     )
-    viz.set_defaults(style="unicode")
+    viz_parser.set_defaults(style="unicode")
 
 
-def _directory(value: str) -> Path:
-    path = Path(value)
+def _parse_directory_argument(argument: str) -> Path:
+    path = Path(argument)
     if not path.is_dir():
-        raise argparse.ArgumentTypeError(f"'{value}' is not a directory")
+        raise argparse.ArgumentTypeError(f"'{argument}' is not a directory")
     return path
 
 
-def _duration(value: str) -> float:
+def _parse_duration_argument(argument: str) -> float:
     try:
-        return parse_duration(value)
+        return parse_duration(argument)
     except ValueError as error:
         raise argparse.ArgumentTypeError(error) from error
 
 
-def _cost(value: str) -> float:
+def _parse_cost_argument(argument: str) -> float:
     try:
-        return parse_cost(value)
+        return parse_cost(argument)
     except ValueError as error:
         raise argparse.ArgumentTypeError(error) from error
 
 
 def _run(args: argparse.Namespace) -> int:
-    def action() -> None:
+    def command_action() -> None:
         run_workflow(args.workflow, load_workflow(args.workflow), args.input, args.directory)
 
-    return _report(action)
+    return _report(command_action)
 
 
 def _resume(args: argparse.Namespace) -> int:
-    def action() -> None:
+    def command_action() -> None:
         state = load_state(args.directory)
         resume_run(
             load_workflow(state["workflow"]),
@@ -236,39 +242,39 @@ def _resume(args: argparse.Namespace) -> int:
             args.add_cost,
         )
 
-    return _report(action)
+    return _report(command_action)
 
 
-def _status(args: argparse.Namespace) -> int:
-    def action() -> None:
+def _print_status(args: argparse.Namespace) -> int:
+    def command_action() -> None:
         state = read_state(args.directory)
         if state is None:
             raise NothingToResume(f"no run in {args.directory}")
         journal = read_journal(args.directory)
         if is_in_progress(args.directory):
-            echo(running_line(state, journal))
+            echo(format_running_line(state, journal))
             return
         if state["node"] == END:
-            echo(stop_line(state, "end"))
+            echo(format_stop_line(state, "end"))
             return
         workflow = load_workflow(state["workflow"])
-        last = journal[-1] if journal else {}
-        reason = last["reason"] if last.get("event") == "stop" else "interrupted"
+        last_event = journal[-1] if journal else {}
+        reason = last_event["reason"] if last_event.get("event") == "stop" else "interrupted"
         question = workflow["nodes"][state["node"]].get("gate")
-        echo(stop_line(state, reason, question))
+        echo(format_stop_line(state, reason, question))
         if "reason" in state:
             print(state["reason"])
         if reason == "gate":
-            print(park_report(state.get("handoff")))
+            print(format_review_material(state.get("handoff")))
         print(f"spent time: {state.get('spent_time', 0):.0f} s")
-        for kind, limit in time_limits(workflow, state).items():
-            print(f"{kind} limit: {limit:g} s")
-        cost = cost_limit(workflow, state)
-        if cost is not None:
+        for limit_kind, limit in compute_time_limits(workflow, state).items():
+            print(f"{limit_kind} limit: {limit:g} s")
+        cost_limit = compute_cost_limit(workflow, state)
+        if cost_limit is not None:
             print(f"spent cost: {state.get('spent_cost', 0):.2f} USD")
-            print(f"cost limit: {cost:g} USD")
+            print(f"cost limit: {cost_limit:g} USD")
 
-    return _report(action)
+    return _report(command_action)
 
 
 def _get_node_lines(args: argparse.Namespace) -> Iterable[Line]:
@@ -323,9 +329,9 @@ def _print_lines(lines: Iterable[Line]) -> None:
         console.on_broken_pipe()
 
 
-def _report(action: Callable[[], None]) -> int:
+def _report(command_action: Callable[[], None]) -> int:
     try:
-        action()
+        command_action()
     except (WorkflowError, RunInProgress, NothingToResume, DecisionError, RecordError) as error:
         print(error, file=sys.stderr)
         return 1
@@ -345,15 +351,15 @@ def _report(action: Callable[[], None]) -> int:
     return 0
 
 
-def _viz(args: argparse.Namespace) -> int:
+def _print_viz(args: argparse.Namespace) -> int:
     try:
         workflow = load_workflow(args.workflow)
     except WorkflowError as error:
         print(error, file=sys.stderr)
         return 1
-    mermaid = to_mermaid(workflow)
+    mermaid_source = render_mermaid(workflow)
     if args.style == "mermaid":
-        print(mermaid)
+        print(mermaid_source)
         return 0
     use_ascii = args.style == "ascii"
     console = Console()
@@ -361,10 +367,10 @@ def _viz(args: argparse.Namespace) -> int:
     # scales: gap also grows the diagram vertically, and padding_y adds blank
     # rows inside boxes, so both stay minimal to keep the graph short.
     # ponytail: linear search over a handful of re-renders; switch to layout math if graphs get big.
-    diagram = render_rich(mermaid, use_ascii=use_ascii, theme=args.theme, padding_y=0)
+    diagram = render_rich(mermaid_source, use_ascii=use_ascii, theme=args.theme, padding_y=0)
     for spread in range(6, 17, 2):
         wider = render_rich(
-            mermaid, use_ascii=use_ascii, theme=args.theme, padding_x=spread, padding_y=0
+            mermaid_source, use_ascii=use_ascii, theme=args.theme, padding_x=spread, padding_y=0
         )
         if max(cell_len(line) for line in wider.plain.splitlines()) > console.width:
             break

@@ -12,7 +12,7 @@ from typing import Any
 from rich.text import Text
 
 from workgraph import show
-from workgraph.run import GREY, format_duration, node_name, read_state
+from workgraph.run import GREY, format_duration, parse_node_name, read_state
 from workgraph.show import DECISION_STYLE, _RunRecord
 from workgraph.workflow import END
 
@@ -34,7 +34,7 @@ Event = dict[str, Any]
 
 @dataclass
 class _NodeRun:
-    """One node run read from its start and end events; children are its fan-out."""
+    """One node run read from its start and end events; fanned_out_runs holds its fan-out."""
 
     name: str
     node: str
@@ -42,11 +42,11 @@ class _NodeRun:
     end: datetime | None = None
     outcome: str | None = None
     cost: float = 0.0
-    children: list["_NodeRun"] = field(default_factory=list)
+    fanned_out_runs: list["_NodeRun"] = field(default_factory=list)
 
 
 # The chain in journal order: node runs, and the limit, stop, and resume events.
-Step = _NodeRun | Event
+ChainEntry = _NodeRun | Event
 
 
 @dataclass
@@ -88,17 +88,17 @@ def follow_graph(directory: Path, until_end: bool) -> Iterator[list[Text]]:
 
 
 def _render_graph(record: _RunRecord, pulse: float | None) -> list[Text]:
-    steps = _build_steps(record.events)
+    chain = _build_chain(record.events)
     now = record.now
-    return [_render_header(record, steps, now), Text(), *_render_chain(record, steps, now, pulse)]
+    return [_render_header(record, chain, now), Text(), *_render_chain(record, chain, now, pulse)]
 
 
-def _build_steps(events: list[Event]) -> list[Step]:
+def _build_chain(events: list[Event]) -> list[ChainEntry]:
     """Pair the start and end events into node runs, keeping the journal order.
 
-    A fanned-out node run hangs off its map node run's children instead of the chain.
+    A fanned-out node run hangs off its map node run instead of the chain.
     """
-    steps: list[Step] = []
+    chain: list[ChainEntry] = []
     runs_by_name: dict[str, _NodeRun] = {}
     last_run_of_node: dict[str, _NodeRun] = {}
     for event in events:
@@ -106,13 +106,13 @@ def _build_steps(events: list[Event]) -> list[Step]:
             case "start":
                 node_run = _NodeRun(
                     name=event["node"],
-                    node=node_name(event["node"]),
+                    node=parse_node_name(event["node"]),
                     start=datetime.fromisoformat(event["time"]),
                 )
                 if event.get("map"):
-                    last_run_of_node[event["map"]].children.append(node_run)
+                    last_run_of_node[event["map"]].fanned_out_runs.append(node_run)
                 else:
-                    steps.append(node_run)
+                    chain.append(node_run)
                     last_run_of_node[node_run.node] = node_run
                 runs_by_name[node_run.name] = node_run
             case "end":
@@ -121,32 +121,34 @@ def _build_steps(events: list[Event]) -> list[Step]:
                 node_run.outcome = "failure" if "failure" in event else event["outcome"]
                 node_run.cost = event["cost"]
             case "limit" | "stop" | "resume":
-                steps.append(event)
-    return steps
+                chain.append(event)
+    return chain
 
 
-def _render_header(record: _RunRecord, steps: list[Step], now: datetime | None) -> Text:
-    """Render `run: <workflow> "<input>" · spent <t> · $<c> · <state>`; $<c> only when non-zero."""
-    top_runs = [step for step in steps if isinstance(step, _NodeRun)]
+def _render_header(record: _RunRecord, chain: list[ChainEntry], now: datetime | None) -> Text:
+    """Render `run: <workflow> "<input>" · spent <t> · $<c> · <status>`; $<c> only when non-zero."""
+    chain_node_runs = [entry for entry in chain if isinstance(entry, _NodeRun)]
     spent_seconds = sum(
         ((node_run.end or now or node_run.start) - node_run.start).total_seconds()
-        for node_run in top_runs
+        for node_run in chain_node_runs
     )
-    spent_cost = round(sum(node_run.cost for node_run in top_runs), 2)
+    spent_cost = round(sum(node_run.cost for node_run in chain_node_runs), 2)
     run_event = record.events[0]
     head = f'run: {run_event["workflow"]} "{run_event["input"]}"'
     head += f" · spent {format_duration(spent_seconds)}"
     if spent_cost:
         head += f" · ${spent_cost:.2f}"
-    return Text(head + " · ").append_text(_render_state(record, steps, now))
+    return Text(head + " · ").append_text(_render_run_status(record, chain, now))
 
 
-def _render_state(record: _RunRecord, steps: list[Step], now: datetime | None) -> Text:
-    last = steps[-1] if steps else None
-    if isinstance(last, dict) and last["event"] == "stop":
-        node, reason = last["node"], last["reason"]
+def _render_run_status(record: _RunRecord, chain: list[ChainEntry], now: datetime | None) -> Text:
+    last_entry = chain[-1] if chain else None
+    if isinstance(last_entry, dict) and last_entry["event"] == "stop":
+        node, reason = last_entry["node"], last_entry["reason"]
         if reason == "gate":
-            waited = (datetime.now(UTC) - datetime.fromisoformat(last["time"])).total_seconds()
+            waited = (
+                datetime.now(UTC) - datetime.fromisoformat(last_entry["time"])
+            ).total_seconds()
             question = record.nodes[node]["gate"]
             return Text(
                 f"parked at {node} for {format_duration(waited)}: {question}", "bold yellow"
@@ -157,12 +159,12 @@ def _render_state(record: _RunRecord, steps: list[Step], now: datetime | None) -
     if now is None:
         state = read_state(record.directory) or {"node": record.start_node}
         return Text(f"interrupted at {state['node']}", "bold yellow")
-    live = ", ".join(
-        f"{step.name} {_format_span(step, now)}"
-        for step in steps
-        if isinstance(step, _NodeRun) and step.end is None
+    in_progress_text = ", ".join(
+        f"{entry.name} {_format_span(entry, now)}"
+        for entry in chain
+        if isinstance(entry, _NodeRun) and entry.end is None
     )
-    return Text(f"running {live or 'between nodes'}", "bold")
+    return Text(f"running {in_progress_text or 'between nodes'}", "bold")
 
 
 def _format_span(node_run: _NodeRun, now: datetime | None) -> str:
@@ -175,28 +177,32 @@ def _format_span(node_run: _NodeRun, now: datetime | None) -> str:
 
 
 def _render_chain(
-    record: _RunRecord, steps: list[Step], now: datetime | None, pulse: float | None
+    record: _RunRecord, chain: list[ChainEntry], now: datetime | None, pulse: float | None
 ) -> list[Text]:
-    pad = max((len(step.name) for step in steps if isinstance(step, _NodeRun)), default=0)
+    name_width = max((len(entry.name) for entry in chain if isinstance(entry, _NodeRun)), default=0)
     rows: list[_Row] = []
-    for index, step in enumerate(steps):
-        if isinstance(step, _NodeRun):
-            rows += _render_run(record, step, now, pulse, pad)
-        elif step["event"] == "limit":
-            rows.append(_Row(Text(f"{GLYPH_LIMIT} {step['node']} → LIMIT", "yellow")))
-        elif step["event"] == "stop":
-            following = steps[index + 1] if index + 1 < len(steps) else None
-            rows.append(_render_stop(record, step, following, pad))
+    for index, entry in enumerate(chain):
+        if isinstance(entry, _NodeRun):
+            rows += _render_run(record, entry, now, pulse, name_width)
+        elif entry["event"] == "limit":
+            rows.append(_Row(Text(f"{GLYPH_LIMIT} {entry['node']} → LIMIT", "yellow")))
+        elif entry["event"] == "stop":
+            following_entry = chain[index + 1] if index + 1 < len(chain) else None
+            rows.append(_render_stop(record, entry, following_entry, name_width))
         else:
-            rows.append(_Row(_render_resume(step)))
+            rows.append(_Row(_render_resume(entry)))
     return _join_columns(rows)
 
 
 def _render_run(
-    record: _RunRecord, node_run: _NodeRun, now: datetime | None, pulse: float | None, pad: int
+    record: _RunRecord,
+    node_run: _NodeRun,
+    now: datetime | None,
+    pulse: float | None,
+    name_width: int,
 ) -> list[_Row]:
     """Render a node run: its row and outcome edge on the left, its fan-out on the right."""
-    left = [_render_node_row(record, node_run, now, pulse, pad)]
+    left = [_render_node_row(record, node_run, now, pulse, name_width)]
     if node_run.end and node_run.outcome != "failure":
         left.append(_render_edge(node_run.outcome or "", _pick_outcome_style(record, node_run)))
     right = _render_fan_out(record, node_run, now, pulse)
@@ -214,32 +220,36 @@ def _render_run(
 def _render_fan_out(
     record: _RunRecord, node_run: _NodeRun, now: datetime | None, pulse: float | None
 ) -> list[Text]:
-    children = node_run.children
+    fanned_out_runs = node_run.fanned_out_runs
     rows = []
-    for index, child in enumerate(children):
-        last_index = len(children) - 1
+    for index, fanned_out_run in enumerate(fanned_out_runs):
+        last_index = len(fanned_out_runs) - 1
         connector = (
             ("─" if last_index == 0 else "┬") if index == 0 else "└" if index == last_index else "├"
         )
         row = Text().append(connector + " ", GREY)
-        row.append_text(_render_node_row(record, child, now, pulse))
-        if child.outcome:
-            row.append("  " + child.outcome, _pick_outcome_style(record, child))
+        row.append_text(_render_node_row(record, fanned_out_run, now, pulse))
+        if fanned_out_run.outcome:
+            row.append("  " + fanned_out_run.outcome, _pick_outcome_style(record, fanned_out_run))
         rows.append(row)
     return rows
 
 
 def _render_node_row(
-    record: _RunRecord, node_run: _NodeRun, now: datetime | None, pulse: float | None, pad: int = 0
+    record: _RunRecord,
+    node_run: _NodeRun,
+    now: datetime | None,
+    pulse: float | None,
+    name_width: int = 0,
 ) -> Text:
     row = Text()
     if node_run.end is None:
         row.append(GLYPH_CURRENT, "bold" if pulse is None else _pick_pulse_style(pulse))
-        row.append(f" {node_run.name.ljust(pad)}  {_format_span(node_run, now)}", "bold")
+        row.append(f" {node_run.name.ljust(name_width)}  {_format_span(node_run, now)}", "bold")
         return row
     style = _pick_outcome_style(record, node_run)
     glyph = {"green": GLYPH_PASS, "red": GLYPH_FAIL}.get(style, GLYPH_PAST)
-    row.append(f"{glyph} {node_run.name.ljust(pad)}", style)
+    row.append(f"{glyph} {node_run.name.ljust(name_width)}", style)
     row.append("  " + _format_span(node_run, now), GREY)
     if "agent" in record.nodes[node_run.node]:
         row.append(f"  ${node_run.cost:.2f}", GREY)
@@ -259,10 +269,12 @@ def _render_edge(label: str, style: str) -> Text:
     return Text().append("│ ", GREY).append(label, style)
 
 
-def _render_stop(record: _RunRecord, event: Event, following: Step | None, pad: int) -> _Row:
+def _render_stop(
+    record: _RunRecord, event: Event, following_entry: ChainEntry | None, name_width: int
+) -> _Row:
     reason = event["reason"]
     if reason == "gate":
-        return _Row(_render_gate(event, following, pad))
+        return _Row(_render_gate(event, following_entry, name_width))
     if reason == "end":
         return _Row(Text(END, "green"))
     if reason == "failure":
@@ -275,18 +287,20 @@ def _render_stop(record: _RunRecord, event: Event, following: Step | None, pad: 
     return _Row(Text(f"{GLYPH_WARN} {reason} at {event['node']}", "bold yellow"), overruns=True)
 
 
-def _render_gate(event: Event, following: Step | None, pad: int) -> Text:
+def _render_gate(event: Event, following_entry: ChainEntry | None, name_width: int) -> Text:
     """Render the gate: its wait until the resume, or `parked <wait>` while it waits."""
-    stopped = datetime.fromisoformat(event["time"])
-    if isinstance(following, dict) and following["event"] == "resume":
-        waited = (datetime.fromisoformat(following["time"]) - stopped).total_seconds()
+    stop_time = datetime.fromisoformat(event["time"])
+    if isinstance(following_entry, dict) and following_entry["event"] == "resume":
+        waited = (datetime.fromisoformat(following_entry["time"]) - stop_time).total_seconds()
         row = Text(
-            f"{GLYPH_GATE} {event['node'].ljust(pad)}", DECISION_STYLE[following["decision"]]
+            f"{GLYPH_GATE} {event['node'].ljust(name_width)}",
+            DECISION_STYLE[following_entry["decision"]],
         )
         return row.append(f"  {format_duration(waited)}", GREY)
-    waited = (datetime.now(UTC) - stopped).total_seconds()
+    waited = (datetime.now(UTC) - stop_time).total_seconds()
     return Text(
-        f"{GLYPH_GATE} {event['node'].ljust(pad)}  parked {format_duration(waited)}", "bold yellow"
+        f"{GLYPH_GATE} {event['node'].ljust(name_width)}  parked {format_duration(waited)}",
+        "bold yellow",
     )
 
 
@@ -298,14 +312,14 @@ def _render_resume(event: Event) -> Text:
 
 def _join_columns(rows: list[_Row]) -> list[Text]:
     """Chain the left column; reach a fan-out on the right with a `─` fill."""
-    width = max((row.left.cell_len for row in rows if not row.overruns), default=0) + 1
+    left_column_width = max((row.left.cell_len for row in rows if not row.overruns), default=0) + 1
     lines = []
     for row in rows:
         line = row.left.copy()
         line.append(" ")
-        line.pad_right(width - line.cell_len, "─" if row.connects else " ")
+        line.pad_right(left_column_width - line.cell_len, "─" if row.connects else " ")
         if row.connects:
-            line.stylize(GREY, row.left.cell_len, width)
+            line.stylize(GREY, row.left.cell_len, left_column_width)
         line.append_text(row.right)
         line.rstrip()
         lines.append(line)

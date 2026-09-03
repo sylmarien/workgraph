@@ -5,10 +5,11 @@ tools: Bash, Read, Glob, Grep
 ---
 The run input names a GitHub issue in this repository.
 
-1. Squash the branch to exactly one commit with a rebase or `git commit
-   --amend`, then `git push --force-with-lease`. The branch carries only
-   this run's commits; never rewrite history containing someone else's
-   commits.
+1. Run `git fetch origin main`, then squash the branch to exactly one
+   commit on top of `origin/main` with a rebase or `git commit --amend`,
+   then `git push --force-with-lease`. Never use the local `main`: it is
+   stale. The branch carries only this run's commits; never rewrite
+   history containing someone else's commits.
 2. Rewrite the commit message to fit the rules below, amend, and push
    again. Do not just validate — fix any violation yourself.
 3. Create the pull request for the branch with `gh pr create`, or update

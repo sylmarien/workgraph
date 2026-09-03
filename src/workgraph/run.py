@@ -62,7 +62,9 @@ class DecisionError(Exception):
     """The resume flags do not fit the stopped run."""
 
 
-def run_workflow(name: str, workflow: dict[str, Any], run_input: str, directory: Path) -> None:
+def run_workflow(
+    workflow_name: str, workflow: dict[str, Any], run_input: str, directory: Path
+) -> None:
     """Run the workflow from its start node until END or a stop.
 
     Runs the nodes in directory. Writes the run record under RUN_DIR:
@@ -74,7 +76,7 @@ def run_workflow(name: str, workflow: dict[str, Any], run_input: str, directory:
     one run per directory.
     """
     state: dict[str, Any] = {
-        "workflow": name,
+        "workflow": workflow_name,
         "input": run_input,
         "node": workflow["start"],
         "visits": {},
@@ -82,8 +84,8 @@ def run_workflow(name: str, workflow: dict[str, Any], run_input: str, directory:
     with _lock(directory):
         shutil.rmtree(directory / RUN_DIR, ignore_errors=True)
         (directory / RUN_DIR).mkdir()
-        _journal(directory, "run", workflow=name, input=run_input)
-        _run_nodes(workflow, state, directory, grace=False, stop_node=state["node"])
+        _append_journal_event(directory, "run", workflow=workflow_name, input=run_input)
+        _run_nodes(workflow, state, directory, grace_entry=False, stop_node=state["node"])
 
 
 def read_state(directory: Path) -> dict[str, Any] | None:
@@ -105,7 +107,7 @@ def load_state(directory: Path) -> dict[str, Any]:
     return state
 
 
-def park_report(handoff: Sequence[str] | None) -> str:
+def format_review_material(handoff: Sequence[str] | None) -> str:
     """Format the review material a gate shows the human."""
     if handoff is None:
         return "No review material."
@@ -115,22 +117,22 @@ def park_report(handoff: Sequence[str] | None) -> str:
 
 def format_duration(seconds: float) -> str:
     """Format whole seconds as 5s, 4m05s, or 2h30m."""
-    whole = int(seconds)
-    if whole < 60:
-        return f"{whole}s"
-    if whole < 3600:
-        return f"{whole // 60}m{whole % 60:02d}s"
-    return f"{whole // 3600}h{whole % 3600 // 60:02d}m"
+    whole_seconds = int(seconds)
+    if whole_seconds < 60:
+        return f"{whole_seconds}s"
+    if whole_seconds < 3600:
+        return f"{whole_seconds // 60}m{whole_seconds % 60:02d}s"
+    return f"{whole_seconds // 3600}h{whole_seconds % 3600 // 60:02d}m"
 
 
-def _spent_text(state: dict[str, Any]) -> str:
+def _format_spent_text(state: dict[str, Any]) -> str:
     """Format the spent amounts: ` · spent <t>`, then ` · $<c>` when the cost is non-zero."""
     text = f" · spent {format_duration(state.get('spent_time', 0))}"
     cost = round(state.get("spent_cost", 0), 2)
     return text + (f" · ${cost:.2f}" if cost else "")
 
 
-def stop_line(state: dict[str, Any], reason: str, question: str | None = None) -> Text:
+def format_stop_line(state: dict[str, Any], reason: str, question: str | None = None) -> Text:
     """Format the stop as one line: END, or `<reason> at <node>`, then the spent amounts.
 
     question is the question of the gate node a parked run stopped at.
@@ -143,23 +145,25 @@ def stop_line(state: dict[str, Any], reason: str, question: str | None = None) -
             head, style = f"parked at {node}: {question}", "bold yellow"
         case _:
             head, style = f"{reason} at {node}", "red" if reason == "failure" else "bold yellow"
-    return Text(head, style).append(_spent_text(state), GREY)
+    return Text(head, style).append(_format_spent_text(state), GREY)
 
 
-def running_line(state: dict[str, Any], journal: list[dict[str, Any]]) -> Text:
+def format_running_line(state: dict[str, Any], journal: list[dict[str, Any]]) -> Text:
     """Format the running line of a run in progress from the journal's last start event.
 
     `running <node run> <elapsed>… · spent <t>`; a fanned-out node run reads `<map>/<node run>`.
     Before the first node run, the line names the node the run enters, timed from the
     run or resume event.
     """
-    event = next(e for e in reversed(journal) if e["event"] in ("start", "run", "resume"))
-    name = event.get("node", state["node"])
-    if event.get("map"):
-        name = f"{event['map']}/{name}"
-    elapsed = datetime.now(UTC) - datetime.fromisoformat(event["time"])
-    text = Text(f"running {name} {format_duration(elapsed.total_seconds())}…", "bold")
-    return text.append(_spent_text(state), GREY)
+    last_started_event = next(
+        event for event in reversed(journal) if event["event"] in ("start", "run", "resume")
+    )
+    running_name = last_started_event.get("node", state["node"])
+    if last_started_event.get("map"):
+        running_name = f"{last_started_event['map']}/{running_name}"
+    elapsed = datetime.now(UTC) - datetime.fromisoformat(last_started_event["time"])
+    text = Text(f"running {running_name} {format_duration(elapsed.total_seconds())}…", "bold")
+    return text.append(_format_spent_text(state), GREY)
 
 
 def read_journal(directory: Path) -> list[dict[str, Any]]:
@@ -174,17 +178,17 @@ def echo(text: Text) -> None:
     Console(highlight=False).print(text, soft_wrap=True)
 
 
-def time_limits(workflow: dict[str, Any], state: dict[str, Any]) -> dict[str, float]:
+def compute_time_limits(workflow: dict[str, Any], state: dict[str, Any]) -> dict[str, float]:
     """Return the effective soft and hard limits: each declared limit plus the grants."""
-    added = state.get("added_time", 0)
+    added_time = state.get("added_time", 0)
     return {
-        key.removeprefix("time_"): limit + added
+        key.removeprefix("time_"): limit + added_time
         for key, limit in workflow.get("budget", {}).items()
         if key.startswith("time_")
     }
 
 
-def cost_limit(workflow: dict[str, Any], state: dict[str, Any]) -> float | None:
+def compute_cost_limit(workflow: dict[str, Any], state: dict[str, Any]) -> float | None:
     """Return the effective cost limit: the declared limit plus the grants; None when undeclared."""
     limit = workflow.get("budget", {}).get("cost")
     return None if limit is None else limit + state.get("added_cost", 0)
@@ -212,49 +216,58 @@ def resume_run(
     at or past an effective limit after the grants. The resume appends to the
     run record.
     """
-    current = state["node"]
-    stopped = state.get("stopped")
-    _check_decision(current, stopped == "gate", decision, feedback)
-    event: dict[str, Any] = {}
+    current_node = state["node"]
+    stop_reason = state.get("stopped")
+    _check_decision(current_node, stop_reason == "gate", decision, feedback)
+    resume_event: dict[str, Any] = {}
     if add_time is not None:
-        if not time_limits(workflow, state):
+        if not compute_time_limits(workflow, state):
             raise DecisionError("the workflow declares no time limit; drop --add-time")
         state["added_time"] = state.get("added_time", 0) + add_time
-        event["add_time"] = add_time
-    for kind, limit in time_limits(workflow, state).items():
+        resume_event["add_time"] = add_time
+    for limit_kind, limit in compute_time_limits(workflow, state).items():
         if state.get("spent_time", 0) >= limit:
             raise DecisionError(
-                f"the run is at or past its {kind} time limit of {limit:g} s;"
+                f"the run is at or past its {limit_kind} time limit of {limit:g} s;"
                 " pass --add-time to resume"
             )
     if add_cost is not None:
-        if cost_limit(workflow, state) is None:
+        if compute_cost_limit(workflow, state) is None:
             raise DecisionError("the workflow declares no cost limit; drop --add-cost")
         state["added_cost"] = state.get("added_cost", 0) + add_cost
-        event["add_cost"] = add_cost
-    cost = cost_limit(workflow, state)
-    if cost is not None and state.get("spent_cost", 0) >= cost:
+        resume_event["add_cost"] = add_cost
+    cost_limit = compute_cost_limit(workflow, state)
+    if cost_limit is not None and state.get("spent_cost", 0) >= cost_limit:
         raise DecisionError(
-            f"the run is at or past its cost limit of {cost:g} USD; pass --add-cost to resume"
+            f"the run is at or past its cost limit of {cost_limit:g} USD; pass --add-cost to resume"
         )
     if decision is not None:
-        print(f"{current}: {decision}", flush=True)
-        event.update(decision=decision, feedback=feedback)
+        print(f"{current_node}: {decision}", flush=True)
+        resume_event.update(decision=decision, feedback=feedback)
         if decision == "reject":
-            saved = state.get("handoff")
-            received = saved[1] if saved else None
-            state["handoff"] = [current, json.dumps({"received": received, "feedback": feedback})]
-        state["node"] = workflow["nodes"][current]["transitions"][decision]
+            saved_handoff = state.get("handoff")
+            received_text = saved_handoff[1] if saved_handoff else None
+            state["handoff"] = [
+                current_node,
+                json.dumps({"received": received_text, "feedback": feedback}),
+            ]
+        state["node"] = workflow["nodes"][current_node]["transitions"][decision]
     with _lock(directory):
-        _journal(directory, "resume", **event)
-        _run_nodes(workflow, state, directory, grace=True, stop_node=current)
+        _append_journal_event(directory, "resume", **resume_event)
+        _run_nodes(workflow, state, directory, grace_entry=True, stop_node=current_node)
 
 
-def _check_decision(node: str, parked: bool, decision: str | None, feedback: str | None) -> None:
+def _check_decision(
+    node_name: str, parked: bool, decision: str | None, feedback: str | None
+) -> None:
     if parked and decision is None:
-        raise DecisionError(f"the run is parked at gate '{node}'; pass --decision accept or reject")
+        raise DecisionError(
+            f"the run is parked at gate '{node_name}'; pass --decision accept or reject"
+        )
     if not parked and decision is not None:
-        raise DecisionError(f"the run stopped at node '{node}', not at a gate; drop --decision")
+        raise DecisionError(
+            f"the run stopped at node '{node_name}', not at a gate; drop --decision"
+        )
     if decision == "reject" and not feedback:
         raise DecisionError("--decision reject requires --feedback")
     if decision == "accept" and feedback is not None:
@@ -268,126 +281,146 @@ def is_in_progress(directory: Path) -> bool:
 
 @contextmanager
 def _lock(directory: Path) -> Iterator[None]:
-    lock = directory / LOCK_FILE
-    lock.parent.mkdir(exist_ok=True)
+    lock_file = directory / LOCK_FILE
+    lock_file.parent.mkdir(exist_ok=True)
     try:
         # ponytail: a killed process leaves a stale lock; store a pid if this bites.
-        lock.touch(exist_ok=False)
+        lock_file.touch(exist_ok=False)
     except FileExistsError:
         raise RunInProgress(
-            f"a run is already in progress in {directory}; delete {lock} if it is stale"
+            f"a run is already in progress in {directory}; delete {lock_file} if it is stale"
         ) from None
     try:
         yield
     finally:
-        lock.unlink()
+        lock_file.unlink()
 
 
 def _run_nodes(
     workflow: dict[str, Any],
     state: dict[str, Any],
     directory: Path,
-    grace: bool,
+    grace_entry: bool,
     stop_node: str,
 ) -> None:
     nodes = workflow["nodes"]
     defaults = workflow.get("defaults", {})
-    limits = time_limits(workflow, state)
-    cost = cost_limit(workflow, state)
+    time_limits = compute_time_limits(workflow, state)
+    cost_limit = compute_cost_limit(workflow, state)
     run_input = state["input"]
     visits = state["visits"]
-    current = state["node"]
-    saved = state.get("handoff")
-    handoff = (saved[0], saved[1]) if saved else None
+    current_node = state["node"]
+    saved_handoff = state.get("handoff")
+    handoff = (saved_handoff[0], saved_handoff[1]) if saved_handoff else None
     state.setdefault("spent_time", 0.0)
     state.setdefault("spent_cost", 0.0)
     state.setdefault("node_runs", {})
-    _write_state(state, directory, current, handoff)
-    diverted: set[str] = set()
-    while current != END:
-        node = nodes[current]
-        if "gate" in node:
-            print(f"{current}: parked", flush=True)
-            _stop(state, directory, current, handoff, "gate", question=node["gate"])
-            print(park_report(handoff), flush=True)
+    _write_state(state, directory, current_node, handoff)
+    diverted_nodes: set[str] = set()
+    while current_node != END:
+        node_definition = nodes[current_node]
+        if "gate" in node_definition:
+            print(f"{current_node}: parked", flush=True)
+            _stop(state, directory, current_node, handoff, "gate", question=node_definition["gate"])
+            print(format_review_material(handoff), flush=True)
             raise Park
-        node_limits = node.get("limits", {})
-        limit = node_limits.get("visits")
-        if not grace and limit is not None and visits.get(current, 0) >= limit:
-            if LIMIT not in node["transitions"]:
+        node_limits = node_definition.get("limits", {})
+        visit_limit = node_limits.get("visits")
+        if (
+            not grace_entry
+            and visit_limit is not None
+            and visits.get(current_node, 0) >= visit_limit
+        ):
+            if LIMIT not in node_definition["transitions"]:
                 error: Exception = Escalation(
-                    f"node '{current}' reached its visit limit of {limit} and has no LIMIT transition"
+                    f"node '{current_node}' reached its visit limit of {visit_limit} and has no LIMIT transition"
                 )
-                _stop(state, directory, current, handoff, "escalation", error)
+                _stop(state, directory, current_node, handoff, "escalation", error)
                 raise error
-            if current in diverted:
+            if current_node in diverted_nodes:
                 error = Escalation(
-                    f"node '{current}' reached its visit limit of {limit}"
+                    f"node '{current_node}' reached its visit limit of {visit_limit}"
                     " and its LIMIT transitions loop without running a node"
                 )
-                _stop(state, directory, current, handoff, "escalation", error)
+                _stop(state, directory, current_node, handoff, "escalation", error)
                 raise error
-            diverted.add(current)
-            _journal(directory, "limit", node=current, target=node["transitions"][LIMIT])
-            stop_node = current
-            current = node["transitions"][LIMIT]
+            diverted_nodes.add(current_node)
+            _append_journal_event(
+                directory, "limit", node=current_node, target=node_definition["transitions"][LIMIT]
+            )
+            stop_node = current_node
+            current_node = node_definition["transitions"][LIMIT]
             continue
-        diverted.clear()
-        spent = state["spent_time"]
-        for kind in ("hard", "soft"):
-            if kind in limits and spent >= limits[kind]:
-                print(f"{current}: budget", flush=True)
+        diverted_nodes.clear()
+        spent_time = state["spent_time"]
+        for limit_kind in ("hard", "soft"):
+            if limit_kind in time_limits and spent_time >= time_limits[limit_kind]:
+                print(f"{current_node}: budget", flush=True)
                 error = BudgetStop(
-                    f"node '{current}': {kind} time limit of {limits[kind]:g} s reached"
+                    f"node '{current_node}': {limit_kind} time limit of {time_limits[limit_kind]:g} s reached"
                 )
-                _stop(state, directory, current, handoff, "budget", error)
+                _stop(state, directory, current_node, handoff, "budget", error)
                 raise error
-        if cost is not None and state["spent_cost"] >= cost:
-            print(f"{current}: budget", flush=True)
-            error = BudgetStop(f"node '{current}': cost limit of {cost:g} USD reached")
-            _stop(state, directory, current, handoff, "budget", error)
+        if cost_limit is not None and state["spent_cost"] >= cost_limit:
+            print(f"{current_node}: budget", flush=True)
+            error = BudgetStop(f"node '{current_node}': cost limit of {cost_limit:g} USD reached")
+            _stop(state, directory, current_node, handoff, "budget", error)
             raise error
-        if grace:
-            grace = False
+        if grace_entry:
+            grace_entry = False
         else:
-            visits[current] = visits.get(current, 0) + 1
-        hard = limits.get("hard")
-        node_run = _next_node_run(state, current)
-        _start(directory, node_run, node, handoff)
-        started = time.monotonic()
+            visits[current_node] = visits.get(current_node, 0) + 1
+        hard_limit = time_limits.get("hard")
+        node_run = _name_next_node_run(state, current_node)
+        _start(directory, node_run, node_definition, handoff)
+        started_monotonic = time.monotonic()
         try:
-            if "agent" in node:
+            if "agent" in node_definition:
                 outcome, handoff_text, node_cost = _run_agent(
-                    node_run, node, defaults, run_input, handoff, directory, hard, spent
+                    node_run,
+                    node_definition,
+                    defaults,
+                    run_input,
+                    handoff,
+                    directory,
+                    hard_limit,
+                    spent_time,
                 )
-            elif "map" in node:
+            elif "map" in node_definition:
                 outcome, handoff_text, node_cost = _run_map(
-                    node_run, node, state, workflow, handoff, directory, hard, spent
+                    node_run,
+                    node_definition,
+                    state,
+                    workflow,
+                    handoff,
+                    directory,
+                    hard_limit,
+                    spent_time,
                 )
             else:
                 outcome, handoff_text, node_cost = _run_command(
-                    node_run, node, directory, hard, spent
+                    node_run, node_definition, directory, hard_limit, spent_time
                 )
         except KeyboardInterrupt:
             # The run record already names the node: no end, no stop.
-            echo(stop_line(state, "interrupted"))
+            echo(format_stop_line(state, "interrupted"))
             raise
         except NodeFailure as error:
-            state["spent_time"] += time.monotonic() - started
+            state["spent_time"] += time.monotonic() - started_monotonic
             state["spent_cost"] += error.cost
-            print(f"{current}: failure", flush=True)
+            print(f"{current_node}: failure", flush=True)
             _end(directory, node_run, {"failure": str(error)}, None, error.cost, state=state)
-            _stop(state, directory, current, handoff, "failure", error)
+            _stop(state, directory, current_node, handoff, "failure", error)
             raise error from None
-        state["spent_time"] += time.monotonic() - started
+        state["spent_time"] += time.monotonic() - started_monotonic
         state["spent_cost"] += node_cost
-        if "agent" in node:
+        if "agent" in node_definition:
             # workgraph discards the handoff after delivering it to an agent.
             handoff = None
-        print(f"{current}: {outcome}", flush=True)
+        print(f"{current_node}: {outcome}", flush=True)
         if outcome == node_limits.get("reset"):
-            visits.pop(current, None)
-        target = node["transitions"][outcome]
+            visits.pop(current_node, None)
+        target = node_definition["transitions"][outcome]
         _end(
             directory, node_run, {"outcome": outcome}, handoff_text, node_cost, target, state=state
         )
@@ -395,18 +428,18 @@ def _run_nodes(
         if target == END:
             handoff = None
         elif handoff_text is not None:
-            handoff = (current, handoff_text)
+            handoff = (current_node, handoff_text)
         # The state names the node the run enters, so an interrupted run resumes there.
         _write_state(state, directory, target, handoff)
-        stop_node = current
-        current = target
+        stop_node = current_node
+        current_node = target
     _stop(state, directory, stop_node, None, "end")
 
 
 def _stop(
     state: dict[str, Any],
     directory: Path,
-    node: str,
+    node_name: str,
     handoff: tuple[str, str] | None,
     reason: str,
     error: Exception | None = None,
@@ -414,38 +447,38 @@ def _stop(
 ) -> None:
     """Record the stop in the state and the journal, then print the stop line.
 
-    node is the node the run stops at; a run that reaches END names the last node run's node.
+    node_name is the node the run stops at; a run that reaches END names the last node run's node.
     """
     if reason == "end":
         _write_state(state, directory, END, None)
     else:
         message = None if error is None else str(error)
-        _write_state(state, directory, node, handoff, stopped=reason, reason=message)
-    _journal(directory, "stop", reason=reason, node=node)
-    echo(stop_line(state, reason, question))
+        _write_state(state, directory, node_name, handoff, stopped=reason, reason=message)
+    _append_journal_event(directory, "stop", reason=reason, node=node_name)
+    echo(format_stop_line(state, reason, question))
 
 
-def _journal(directory: Path, event: str, **fields: Any) -> None:
+def _append_journal_event(directory: Path, event_kind: str, **fields: Any) -> None:
     """Append one event to the journal: one write per line under the in-process lock."""
     now = datetime.now(UTC).isoformat(timespec="seconds")
-    line = json.dumps({"event": event, "time": now, **fields}) + "\n"
+    line = json.dumps({"event": event_kind, "time": now, **fields}) + "\n"
     with _JOURNAL_LOCK, (directory / JOURNAL_FILE).open("a") as file:
         file.write(line)
 
 
-def _next_node_run(state: dict[str, Any], node: str) -> str:
+def _name_next_node_run(state: dict[str, Any], node_name: str) -> str:
     """Count one more node run of the node and name it: <node>#<n>, n from 1 and never reset."""
-    runs = state["node_runs"]
-    runs[node] = runs.get(node, 0) + 1
-    return f"{node}#{runs[node]}"
+    node_run_counts = state["node_runs"]
+    node_run_counts[node_name] = node_run_counts.get(node_name, 0) + 1
+    return f"{node_name}#{node_run_counts[node_name]}"
 
 
-def node_name(node_run: str) -> str:
+def parse_node_name(node_run: str) -> str:
     """Return the node name of a node run name."""
     return node_run.rpartition("#")[0]
 
 
-def output_file(directory: Path, node_run: str, stream: str) -> Path:
+def build_output_path(directory: Path, node_run: str, stream: str) -> Path:
     """Return the path of a node run output file: `<run dir>/<node run>.<stream>`."""
     return directory / RUN_DIR / f"{node_run}.{stream}"
 
@@ -453,7 +486,7 @@ def output_file(directory: Path, node_run: str, stream: str) -> Path:
 def _start(
     directory: Path,
     node_run: str,
-    node: dict[str, Any],
+    node_definition: dict[str, Any],
     handoff: tuple[str, str] | None,
     map_name: str | None = None,
 ) -> None:
@@ -461,12 +494,14 @@ def _start(
 
     A fanned-out node run names its map node; the start event carries map only then.
     """
-    if "map" not in node:
+    if "map" not in node_definition:
         for stream in ("stdout", "stderr"):
-            output_file(directory, node_run, stream).touch()
-    delivered = {"source": handoff[0], "text": handoff[1]} if handoff else None
-    fanned_out = {} if map_name is None else {"map": map_name}
-    _journal(directory, "start", node=node_run, handoff=delivered, **fanned_out)
+            build_output_path(directory, node_run, stream).touch()
+    delivered_handoff = {"source": handoff[0], "text": handoff[1]} if handoff else None
+    map_fields = {} if map_name is None else {"map": map_name}
+    _append_journal_event(
+        directory, "start", node=node_run, handoff=delivered_handoff, **map_fields
+    )
 
 
 def _end(
@@ -483,8 +518,10 @@ def _end(
 
     ending holds the one key the event ends with: outcome or failure.
     """
-    spent = {} if state is None else {key: state[key] for key in ("spent_time", "spent_cost")}
-    _journal(
+    spent_amounts = (
+        {} if state is None else {key: state[key] for key in ("spent_time", "spent_cost")}
+    )
+    _append_journal_event(
         directory,
         "end",
         node=node_run,
@@ -493,23 +530,27 @@ def _end(
         target=target,
         map=map_name,
         cost=cost,
-        **spent,
+        **spent_amounts,
     )
 
 
 def _spawn(
-    node_run: str, command: str | list[str], directory: Path, hard: float | None, spent: float
+    node_run: str,
+    command: str | list[str],
+    directory: Path,
+    hard_limit: float | None,
+    spent_time: float,
 ) -> subprocess.CompletedProcess[bytes]:
     """Run the command in directory; write its stdout and stderr to the node run's files.
 
     The command reads no stdin. _spawn kills it when the spent time reaches the hard limit.
     """
-    timeout = None if hard is None else hard - spent
+    timeout = None if hard_limit is None else hard_limit - spent_time
     try:
         argv = shlex.split(command) if isinstance(command, str) else command
         with (
-            output_file(directory, node_run, "stdout").open("w") as stdout,
-            output_file(directory, node_run, "stderr").open("w") as stderr,
+            build_output_path(directory, node_run, "stdout").open("w") as stdout,
+            build_output_path(directory, node_run, "stderr").open("w") as stderr,
         ):
             return subprocess.run(
                 argv,
@@ -521,113 +562,150 @@ def _spawn(
                 stderr=stderr,
             )
     except (OSError, ValueError, IndexError) as error:
-        raise NodeFailure(f"node '{node_name(node_run)}': spawn failure: {error}") from error
+        raise NodeFailure(f"node '{parse_node_name(node_run)}': spawn failure: {error}") from error
     except subprocess.TimeoutExpired:
         raise NodeFailure(
-            f"node '{node_name(node_run)}': hard time limit of {hard:g} s reached"
+            f"node '{parse_node_name(node_run)}': hard time limit of {hard_limit:g} s reached"
         ) from None
 
 
 def _run_command(
-    node_run: str, node: dict[str, Any], directory: Path, hard: float | None, spent: float
+    node_run: str,
+    node_definition: dict[str, Any],
+    directory: Path,
+    hard_limit: float | None,
+    spent_time: float,
 ) -> tuple[str, None, float]:
     """Run the command; a command node reports no handoff and no cost."""
-    completed = _spawn(node_run, node["command"], directory, hard, spent)
+    completed = _spawn(node_run, node_definition["command"], directory, hard_limit, spent_time)
     return ("pass" if completed.returncode == 0 else "fail"), None, 0.0
 
 
 def _run_map(
     node_run: str,
-    node: dict[str, Any],
+    node_definition: dict[str, Any],
     state: dict[str, Any],
     workflow: dict[str, Any],
     handoff: tuple[str, str] | None,
     directory: Path,
-    hard: float | None,
-    spent: float,
+    hard_limit: float | None,
+    spent_time: float,
 ) -> tuple[str, str | None, float]:
-    name = node_name(node_run)
+    map_name = parse_node_name(node_run)
     nodes = workflow["nodes"]
     defaults = workflow.get("defaults", {})
 
-    def run_child(child: str, child_run: str) -> tuple[str, str | None, float]:
-        child_node = nodes[child]
-        _start(directory, child_run, child_node, handoff, map_name=name)
+    def run_fanned_out(fanned_out_node: str, fanned_out_run: str) -> tuple[str, str | None, float]:
+        fanned_out_definition = nodes[fanned_out_node]
+        _start(directory, fanned_out_run, fanned_out_definition, handoff, map_name=map_name)
         try:
-            if "agent" in child_node:
-                result = _run_agent(
-                    child_run, child_node, defaults, state["input"], handoff, directory, hard, spent
+            if "agent" in fanned_out_definition:
+                outcome, handoff_text, cost = _run_agent(
+                    fanned_out_run,
+                    fanned_out_definition,
+                    defaults,
+                    state["input"],
+                    handoff,
+                    directory,
+                    hard_limit,
+                    spent_time,
                 )
             else:
-                result = _run_command(child_run, child_node, directory, hard, spent)
-            ending: dict[str, Any] = {"outcome": result[0]}
+                outcome, handoff_text, cost = _run_command(
+                    fanned_out_run, fanned_out_definition, directory, hard_limit, spent_time
+                )
+            ending: dict[str, Any] = {"outcome": outcome}
         except NodeFailure as error:
             # A fanned-out node's failure counts as not passing; the run continues.
-            result = "fail", None, error.cost
+            outcome, handoff_text, cost = "fail", None, error.cost
             ending = {"failure": str(error)}
-        print(f"{name}/{child}: {result[0]}", flush=True)
-        _end(directory, child_run, ending, result[1], result[2], map_name=name)
-        return result
+        print(f"{map_name}/{fanned_out_node}: {outcome}", flush=True)
+        _end(directory, fanned_out_run, ending, handoff_text, cost, map_name=map_name)
+        return outcome, handoff_text, cost
 
-    children = node["map"]
-    runs = [_next_node_run(state, child) for child in children]
-    with ThreadPoolExecutor(max_workers=len(children)) as pool:
-        results = list(pool.map(run_child, children, runs))
-    resolve = all if node["resolve"] == "all" else any
-    outcome = (
-        "pass" if resolve(child_outcome == "pass" for child_outcome, _, _ in results) else "fail"
-    )
-    blocks = [
-        f"{child}:\n{text}"
-        for child, (_, text, _) in zip(children, results, strict=True)
-        if text is not None
+    fanned_out_nodes = node_definition["map"]
+    fanned_out_runs = [
+        _name_next_node_run(state, fanned_out_node) for fanned_out_node in fanned_out_nodes
     ]
-    return outcome, "\n\n".join(blocks) if blocks else None, sum(cost for _, _, cost in results)
+    with ThreadPoolExecutor(max_workers=len(fanned_out_nodes)) as pool:
+        fanned_out_results = list(pool.map(run_fanned_out, fanned_out_nodes, fanned_out_runs))
+    resolve = all if node_definition["resolve"] == "all" else any
+    outcome = (
+        "pass"
+        if resolve(fanned_out_outcome == "pass" for fanned_out_outcome, _, _ in fanned_out_results)
+        else "fail"
+    )
+    handoff_blocks = [
+        f"{fanned_out_node}:\n{handoff_text}"
+        for fanned_out_node, (_, handoff_text, _) in zip(
+            fanned_out_nodes, fanned_out_results, strict=True
+        )
+        if handoff_text is not None
+    ]
+    return (
+        outcome,
+        "\n\n".join(handoff_blocks) if handoff_blocks else None,
+        sum(cost for _, _, cost in fanned_out_results),
+    )
 
 
 def _run_agent(
     node_run: str,
-    node: dict[str, Any],
+    node_definition: dict[str, Any],
     defaults: dict[str, Any],
     run_input: str,
     handoff: tuple[str, str] | None,
     directory: Path,
-    hard: float | None,
-    spent: float,
+    hard_limit: float | None,
+    spent_time: float,
 ) -> tuple[str, str | None, float]:
     """Run the agent; return its outcome, handoff, and the USD cost the harness reported.
 
     The agent's stdout holds one stream-json event per line; one of them is the result.
     """
-    name = node_name(node_run)
+    agent_node_name = parse_node_name(node_run)
     # The definition resolves from the invocation directory (the process cwd);
     # only the spawned agent executes in the target directory.
-    definition = _load_agent_definition(name, node["agent"])
+    agent_definition = _load_agent_definition(agent_node_name, node_definition["agent"])
     prompt = run_input
     if handoff is not None:
         source, text = handoff
         prompt = f"{run_input}\n\nHandoff from {source}:\n{text}"
-    command = _agent_argv(node, defaults, definition, prompt)
-    completed = _spawn(node_run, command, directory, hard, spent)
+    command = _build_agent_argv(node_definition, defaults, agent_definition, prompt)
+    completed = _spawn(node_run, command, directory, hard_limit, spent_time)
     if completed.returncode != 0:
-        raise NodeFailure(f"node '{name}': agent exited with code {completed.returncode}")
-    lines = output_file(directory, node_run, "stdout").read_text().splitlines()
-    results = [event for event in iter_stream_events(lines) if event.get("type") == "result"]
-    if not results:
-        raise NodeFailure(f"node '{name}': agent output holds no result event")
-    result = results[-1]
+        raise NodeFailure(
+            f"node '{agent_node_name}': agent exited with code {completed.returncode}"
+        )
+    stdout_lines = build_output_path(directory, node_run, "stdout").read_text().splitlines()
+    result_events = [
+        event for event in iter_stream_events(stdout_lines) if event.get("type") == "result"
+    ]
+    if not result_events:
+        raise NodeFailure(f"node '{agent_node_name}': agent output holds no result event")
+    result_event = result_events[-1]
     try:
-        cost = float(result.get("total_cost_usd") or 0)
+        cost = float(result_event.get("total_cost_usd") or 0)
     except (TypeError, ValueError):
         # A malformed cost counts as zero; the run continues.
         cost = 0.0
-    if result.get("is_error"):
-        raise NodeFailure(f"node '{name}': agent reported an error", cost)
-    output = result.get("structured_output")
-    if not isinstance(output, dict) or output.get("outcome") not in node["outcomes"]:
-        raise NodeFailure(f"node '{name}': agent reported no outcome from {node['outcomes']}", cost)
-    handoff_text = output.get("handoff")
-    return output["outcome"], str(handoff_text) if handoff_text is not None else None, cost
+    if result_event.get("is_error"):
+        raise NodeFailure(f"node '{agent_node_name}': agent reported an error", cost)
+    structured_output = result_event.get("structured_output")
+    if (
+        not isinstance(structured_output, dict)
+        or structured_output.get("outcome") not in node_definition["outcomes"]
+    ):
+        raise NodeFailure(
+            f"node '{agent_node_name}': agent reported no outcome from {node_definition['outcomes']}",
+            cost,
+        )
+    handoff_text = structured_output.get("handoff")
+    return (
+        structured_output["outcome"],
+        str(handoff_text) if handoff_text is not None else None,
+        cost,
+    )
 
 
 def iter_stream_events(lines: Iterable[str]) -> Iterator[dict[str, Any]]:
@@ -641,13 +719,16 @@ def iter_stream_events(lines: Iterable[str]) -> Iterator[dict[str, Any]]:
             yield event
 
 
-def _agent_argv(
-    node: dict[str, Any], defaults: dict[str, Any], definition: dict[str, str], prompt: str
+def _build_agent_argv(
+    node_definition: dict[str, Any],
+    defaults: dict[str, Any],
+    agent_definition: dict[str, str],
+    prompt: str,
 ) -> list[str]:
     schema = {
         "type": "object",
         "properties": {
-            "outcome": {"enum": node["outcomes"]},
+            "outcome": {"enum": node_definition["outcomes"]},
             "handoff": {
                 "type": "string",
                 "description": "Optional free text delivered to the next node of the workflow.",
@@ -655,9 +736,12 @@ def _agent_argv(
         },
         "required": ["outcome"],
     }
-    agent = node["agent"]
+    agent_name = node_definition["agent"]
     agents = {
-        agent: {"description": definition.get("description", ""), "prompt": definition["prompt"]}
+        agent_name: {
+            "description": agent_definition.get("description", ""),
+            "prompt": agent_definition["prompt"],
+        }
     }
     # No --bare: bare mode reads no OAuth credentials, so agent nodes cannot
     # authenticate for subscription users. Accepted cost: hooks and plugins
@@ -674,53 +758,53 @@ def _agent_argv(
         "--agents",
         json.dumps(agents),
         "--agent",
-        agent,
+        agent_name,
         "--permission-mode",
         "dontAsk",
         "--model",
-        node.get("model", defaults.get("model")),
+        node_definition.get("model", defaults.get("model")),
         "--effort",
-        node.get("effort", defaults.get("effort")),
+        node_definition.get("effort", defaults.get("effort")),
     ]
-    if "tools" in definition:
-        command += ["--allowedTools", definition["tools"]]
+    if "tools" in agent_definition:
+        command += ["--allowedTools", agent_definition["tools"]]
     return command
 
 
-def _load_agent_definition(node: str, agent: str) -> dict[str, str]:
-    for base in (Path.cwd(), Path.home()):
-        path = base / ".workgraph" / "agents" / f"{agent}.md"
+def _load_agent_definition(agent_node_name: str, agent_name: str) -> dict[str, str]:
+    for base_directory in (Path.cwd(), Path.home()):
+        path = base_directory / ".workgraph" / "agents" / f"{agent_name}.md"
         if path.is_file():
             return _parse_agent_definition(path.read_text())
     raise NodeFailure(
-        f"node '{node}': agent definition '{agent}' not found in .workgraph/agents"
+        f"node '{agent_node_name}': agent definition '{agent_name}' not found in .workgraph/agents"
         " of the invocation directory or the home directory"
     )
 
 
-def _parse_agent_definition(text: str) -> dict[str, str]:
-    front, separator, body = text.removeprefix("---\n").partition("\n---\n")
-    if not text.startswith("---\n") or not separator:
-        return {"prompt": text}
+def _parse_agent_definition(definition_text: str) -> dict[str, str]:
+    front_matter, separator, body = definition_text.removeprefix("---\n").partition("\n---\n")
+    if not definition_text.startswith("---\n") or not separator:
+        return {"prompt": definition_text}
     # ponytail: single-line "key: value" pairs only; a YAML parser when a definition needs more.
-    fields = {"prompt": body.lstrip("\n")}
-    for line in front.splitlines():
+    definition_fields = {"prompt": body.lstrip("\n")}
+    for line in front_matter.splitlines():
         key, colon, value = line.partition(":")
         if colon:
-            fields[key.strip()] = value.strip()
-    return fields
+            definition_fields[key.strip()] = value.strip()
+    return definition_fields
 
 
 def _write_state(
     state: dict[str, Any],
     directory: Path,
-    node: str,
+    node_name: str,
     handoff: tuple[str, str] | None,
     stopped: str | None = None,
     reason: str | None = None,
 ) -> None:
     state.update(
-        node=node, handoff=list(handoff) if handoff else None, stopped=stopped, reason=reason
+        node=node_name, handoff=list(handoff) if handoff else None, stopped=stopped, reason=reason
     )
-    written = {key: value for key, value in state.items() if value is not None}
-    (directory / STATE_FILE).write_text(json.dumps(written))
+    written_state = {key: value for key, value in state.items() if value is not None}
+    (directory / STATE_FILE).write_text(json.dumps(written_state))
