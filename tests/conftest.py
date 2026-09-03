@@ -259,7 +259,7 @@ def outcome_response(outcome: str, handoff: str | None = None, cost: float | Non
     output: dict[str, str] = {"outcome": outcome}
     if handoff is not None:
         output["handoff"] = handoff
-    result: dict[str, object] = {"is_error": False, "structured_output": output}
+    result: dict[str, object] = {"type": "result", "is_error": False, "structured_output": output}
     if cost is not None:
         result["total_cost_usd"] = cost
     return json.dumps(result)

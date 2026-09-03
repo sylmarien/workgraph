@@ -119,7 +119,13 @@ def test_agent_node_runs_keep_the_raw_stream_json(
     project, _ = dirs
     write(project, "agents", AGENT)
     write_agent(project, "planner", PLANNER)
-    lines = ['{"type": "system"}', '{"type": "assistant"}', outcome_response("done", "Plan.", 0.5)]
+    lines = [
+        '{"type": "system"}',
+        '{"type": "assistant"}',
+        outcome_response("done", "Plan.", 0.5),
+        '{"type": "system", "subtype": "task_summary"}',
+        "not json",
+    ]
     script = "".join(f"echo '{line}'\n" for line in lines) + "echo warning >&2\n"
     (project / "bin" / "claude").write_text(
         f"#!/bin/sh\nprintf '%s\\0' \"$@\" '===' >> claude-calls.txt\n{script}"
@@ -160,7 +166,9 @@ def test_fanned_out_ends_carry_map_and_no_spent_amounts_and_a_gate_parks(
     for agent in ("tester", "reviewer"):
         write_agent(project, agent, f"You are the {agent}.")
     respond_agent(project, "tester", outcome_response("pass", "Tests green.", 0.75))
-    respond_agent(project, "reviewer", json.dumps({"is_error": True, "total_cost_usd": 0.5}))
+    respond_agent(
+        project, "reviewer", json.dumps({"type": "result", "is_error": True, "total_cost_usd": 0.5})
+    )
     assert main(["run", "fan", "issue #9"]) == 4
     events = journal()
     assert events[:2] == [

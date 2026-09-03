@@ -430,10 +430,15 @@ def test_spawn_flags_follow_the_decisions(
     ("response", "message"),
     [
         ("EXIT2", "exited with code 2"),
-        (json.dumps({"is_error": True}), "reported an error"),
-        (json.dumps({"result": "done"}), "reported no outcome"),
-        (json.dumps({"structured_output": {"outcome": "maybe"}}), "reported no outcome"),
-        ("not json", "not JSON"),
+        (json.dumps({"type": "result", "is_error": True}), "reported an error"),
+        (json.dumps({"type": "result", "result": "done"}), "reported no outcome"),
+        (
+            json.dumps({"type": "result", "structured_output": {"outcome": "maybe"}}),
+            "reported no outcome",
+        ),
+        (json.dumps({"type": "system", "subtype": "task_summary"}), "holds no result event"),
+        ("not json", "holds no result event"),
+        ("5", "holds no result event"),
     ],
 )
 def test_each_agent_failure_kind_stops_the_run(
@@ -1962,7 +1967,9 @@ def test_map_sums_the_costs_of_its_fanned_out_agents(
     for agent in ("tester", "reviewer"):
         write_agent(project, agent, f"You are the {agent}.")
     respond_agent(project, "tester", outcome_response("pass", cost=0.75))
-    respond_agent(project, "reviewer", json.dumps({"is_error": True, "total_cost_usd": 0.5}))
+    respond_agent(
+        project, "reviewer", json.dumps({"type": "result", "is_error": True, "total_cost_usd": 0.5})
+    )
     assert main(["run", "checks", "input"]) == 0
     assert read_state()["spent_cost"] == 1.25
 
@@ -1975,7 +1982,9 @@ def test_a_result_without_a_numeric_cost_adds_nothing(
     cost_run(project, 0.5)
     respond(
         project,
-        json.dumps({"structured_output": {"outcome": "done"}, "total_cost_usd": cost}),
+        json.dumps(
+            {"type": "result", "structured_output": {"outcome": "done"}, "total_cost_usd": cost}
+        ),
         outcome_response("done", cost=0.5),
     )
     assert main(["run", "cost", "input"]) == 0
@@ -1987,7 +1996,7 @@ def test_a_failed_agent_run_counts_its_cost(
 ) -> None:
     project, _ = dirs
     cost_run(project)
-    respond(project, json.dumps({"structured_output": {}, "total_cost_usd": 0.5}))
+    respond(project, json.dumps({"type": "result", "structured_output": {}, "total_cost_usd": 0.5}))
     assert main(["run", "cost", "input"]) == 2
     assert read_state()["spent_cost"] == 0.5
     assert read_state()["stopped"] == "failure"
