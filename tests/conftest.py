@@ -12,33 +12,33 @@ import pytest
 
 from workgraph.run import STATE_FILE
 
-QueuedStep = Callable[[], None]
+QueuedAction = Callable[[], None]
 
 
 @pytest.fixture
-def queue_steps(monkeypatch: pytest.MonkeyPatch) -> Iterator[Callable[..., None]]:
-    """Return a function queuing the steps a thread runs, one per follower sleep.
+def queue_actions(monkeypatch: pytest.MonkeyPatch) -> Iterator[Callable[..., None]]:
+    """Return a function queuing the actions a thread runs, one per follower sleep.
 
-    The patched sleep runs the next step on the thread and waits for it to end.
-    A sleep past the last step fails the test instead of hanging.
+    The patched sleep runs the next action on the thread and waits for it to end.
+    A sleep past the last action fails the test instead of hanging.
     """
-    steps: deque[QueuedStep] = deque()
+    actions: deque[QueuedAction] = deque()
 
     def poll(_seconds: float) -> None:
-        if not steps:
-            raise TimeoutError("the follow polled past the last step")
-        writer_thread.submit(steps.popleft()).result()
+        if not actions:
+            raise TimeoutError("the follow polled past the last action")
+        writer_thread.submit(actions.popleft()).result()
 
-    def queue(*new_steps: QueuedStep) -> None:
-        steps.extend(new_steps)
+    def queue(*new_actions: QueuedAction) -> None:
+        actions.extend(new_actions)
 
     with ThreadPoolExecutor(max_workers=1) as writer_thread:
         monkeypatch.setattr(time, "sleep", poll)
         yield queue
-    assert not steps, "the follow ended before the last step"
+    assert not actions, "the follow ended before the last action"
 
 
-MINIMAL = """
+MINIMAL_WORKFLOW = """
 start = "check"
 
 [nodes.check]
@@ -69,9 +69,8 @@ esac
 
 
 @pytest.fixture
-def fake_claude(dirs: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch) -> None:
+def fake_claude(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Put a fake claude on PATH that logs its argv and replays canned responses."""
-    project, _ = dirs
     bin_dir = project / "bin"
     bin_dir.mkdir()
     script = bin_dir / "claude"
@@ -81,15 +80,21 @@ def fake_claude(dirs: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 @pytest.fixture
-def dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
-    """Create a project dir (the cwd) and a fake home dir; return both."""
-    project = tmp_path / "project"
+def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Create a fake home dir and point HOME at it."""
     home = tmp_path / "home"
-    project.mkdir()
     home.mkdir()
-    monkeypatch.chdir(project)
     monkeypatch.setenv("HOME", str(home))
-    return project, home
+    return home
+
+
+@pytest.fixture
+def project(tmp_path: Path, home: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Create a project dir and make it the cwd."""
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    return project
 
 
 @pytest.fixture
@@ -102,14 +107,14 @@ def utc_plus_2(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     time.tzset()
 
 
-def write(base: Path, name: str, text: str) -> None:
-    """Write a workflow file into base/.workgraph/workflows."""
-    directory = base / ".workgraph" / "workflows"
+def write_workflow(base_directory: Path, workflow_name: str, workflow_toml: str) -> None:
+    """Write a workflow file into .workgraph/workflows under the base directory."""
+    directory = base_directory / ".workgraph" / "workflows"
     directory.mkdir(parents=True, exist_ok=True)
-    (directory / f"{name}.toml").write_text(text)
+    (directory / f"{workflow_name}.toml").write_text(workflow_toml)
 
 
-DEV = """
+DEV_WORKFLOW = """
 start = "plan"
 
 [budget]
@@ -163,14 +168,13 @@ done = "END"
 
 
 @pytest.fixture
-def dev_project(dirs: tuple[Path, Path], utc_plus_2: None) -> Path:
-    """Write the DEV workflow."""
-    project, _ = dirs
-    write(project, "dev", DEV)
+def dev_project(project: Path, utc_plus_2: None) -> Path:
+    """Write the dev workflow."""
+    write_workflow(project, "dev", DEV_WORKFLOW)
     return project
 
 
-LOOP = """
+LOOP_WORKFLOW = """
 start = "check"
 
 [nodes.check]
@@ -182,7 +186,7 @@ fail = "check"
 """
 
 
-SPIN = """
+SPIN_WORKFLOW = """
 start = "spin"
 
 [nodes.spin]
@@ -198,7 +202,7 @@ LIMIT = "END"
 """
 
 
-BROKEN = """
+BROKEN_WORKFLOW = """
 start = "check"
 
 [nodes.check]
@@ -210,7 +214,7 @@ fail = "END"
 """
 
 
-AGENT = """
+AGENT_WORKFLOW = """
 start = "plan"
 
 [defaults]
@@ -227,7 +231,7 @@ done = "END"
 """
 
 
-PLANNER = """---
+PLANNER_AGENT = """---
 name: planner
 description: Plans the work.
 tools: Read, Grep
@@ -237,55 +241,61 @@ model: sonnet
 You are the planner."""
 
 
-def write_agent(base: Path, name: str, text: str) -> None:
-    """Write an agent definition into base/.workgraph/agents."""
-    directory = base / ".workgraph" / "agents"
+def write_agent(base_directory: Path, agent_name: str, definition_text: str) -> None:
+    """Write an agent definition into .workgraph/agents under the base directory."""
+    directory = base_directory / ".workgraph" / "agents"
     directory.mkdir(parents=True, exist_ok=True)
-    (directory / f"{name}.md").write_text(text)
+    (directory / f"{agent_name}.md").write_text(definition_text)
 
 
-def respond(project: Path, *responses: str) -> None:
+def queue_responses(project: Path, *responses: str) -> None:
     """Queue one fake-claude response per upcoming spawn."""
     (project / "responses").write_text("\n".join(responses) + "\n")
 
 
-def respond_agent(project: Path, agent: str, *responses: str) -> None:
+def queue_agent_responses(project: Path, agent_name: str, *responses: str) -> None:
     """Queue fake-claude responses for one agent; parallel spawns need per-agent queues."""
-    (project / f"responses-{agent}").write_text("\n".join(responses) + "\n")
+    (project / f"responses-{agent_name}").write_text("\n".join(responses) + "\n")
 
 
-def outcome_response(outcome: str, handoff: str | None = None, cost: float | None = None) -> str:
+def build_outcome_response(
+    outcome: str, handoff: str | None = None, cost: float | None = None
+) -> str:
     """Build a fake claude result JSON reporting the outcome, an optional handoff and cost."""
-    output: dict[str, str] = {"outcome": outcome}
+    structured_output: dict[str, str] = {"outcome": outcome}
     if handoff is not None:
-        output["handoff"] = handoff
-    result: dict[str, object] = {"type": "result", "is_error": False, "structured_output": output}
+        structured_output["handoff"] = handoff
+    result_event: dict[str, object] = {
+        "type": "result",
+        "is_error": False,
+        "structured_output": structured_output,
+    }
     if cost is not None:
-        result["total_cost_usd"] = cost
-    return json.dumps(result)
+        result_event["total_cost_usd"] = cost
+    return json.dumps(result_event)
 
 
-def spawn_args(project: Path) -> list[list[str]]:
+def read_spawn_argv(project: Path) -> list[list[str]]:
     """Read the argv of each fake-claude spawn, in order."""
-    log = (project / "claude-calls.txt").read_text()
-    return [block.split("\0") for block in log.split("\0===\0") if block]
+    calls_text = (project / "claude-calls.txt").read_text()
+    return [call.split("\0") for call in calls_text.split("\0===\0") if call]
 
 
-def flag_value(args: list[str], name: str) -> str:
+def find_flag_value(argv: list[str], flag: str) -> str:
     """Return the value following the flag in the argv."""
-    return args[args.index(name) + 1]
+    return argv[argv.index(flag) + 1]
 
 
-def read_state() -> dict[str, object]:
+def read_project_state() -> dict[str, object]:
     """Read the run state file from the working directory."""
     return dict(json.loads(STATE_FILE.read_text()))
 
 
 # Node runs in these tests take milliseconds; the tolerance absorbs a slow machine.
-SPENT = pytest.approx(0, abs=1)
+NEAR_ZERO_SECONDS = pytest.approx(0, abs=1)
 
 
-SOFT = """
+SOFT_WORKFLOW = """
 start = "wait"
 
 [budget]
@@ -304,7 +314,7 @@ LIMIT = "END"
 """
 
 
-COST = """
+COST_WORKFLOW = """
 start = "plan"
 
 [budget]
@@ -331,9 +341,15 @@ done = "END"
 """
 
 
-def cost_run(project: Path, *costs: float | None) -> None:
-    """Write the COST workflow and queue one planner or builder response per cost."""
-    write(project, "cost", COST)
-    for agent in ("planner", "builder"):
-        write_agent(project, agent, f"You are the {agent}.")
-    respond(project, *(outcome_response("done", f"plan {i}", cost) for i, cost in enumerate(costs)))
+def set_up_cost_run(project: Path, *costs: float | None) -> None:
+    """Write the cost workflow and queue one planner or builder response per cost."""
+    write_workflow(project, "cost", COST_WORKFLOW)
+    for agent_name in ("planner", "builder"):
+        write_agent(project, agent_name, f"You are the {agent_name}.")
+    queue_responses(
+        project,
+        *(
+            build_outcome_response("done", f"plan {index}", cost)
+            for index, cost in enumerate(costs)
+        ),
+    )

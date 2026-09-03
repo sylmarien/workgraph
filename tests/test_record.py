@@ -7,30 +7,36 @@ from pathlib import Path
 import pytest
 
 from tests.conftest import (
-    AGENT,
-    BROKEN,
-    LOOP,
-    MINIMAL,
-    PLANNER,
-    SOFT,
-    SPENT,
-    SPIN,
-    cost_run,
-    flag_value,
-    outcome_response,
-    read_state,
-    respond_agent,
-    spawn_args,
-    write,
+    AGENT_WORKFLOW,
+    BROKEN_WORKFLOW,
+    LOOP_WORKFLOW,
+    MINIMAL_WORKFLOW,
+    NEAR_ZERO_SECONDS,
+    PLANNER_AGENT,
+    SOFT_WORKFLOW,
+    SPIN_WORKFLOW,
+    build_outcome_response,
+    find_flag_value,
+    queue_agent_responses,
+    read_project_state,
+    read_spawn_argv,
+    set_up_cost_run,
     write_agent,
+    write_workflow,
 )
 from workgraph.cli import main
 from workgraph.run import RUN_DIR, read_journal
 
-TIME = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+00:00")
-END = {"handoff": None, "map": None, "cost": 0, "spent_time": SPENT, "spent_cost": 0}
+TIME_PATTERN = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+00:00")
+COMMAND_END_FIELDS = {
+    "handoff": None,
+    "map": None,
+    "cost": 0,
+    "spent_time": NEAR_ZERO_SECONDS,
+    "spent_cost": 0,
+}
 
-GATED_FAN = """
+GATED_FAN_WORKFLOW = """
 start = "checks"
 
 [defaults]
@@ -66,63 +72,74 @@ reject = "checks"
 """
 
 
-def journal() -> list[dict[str, object]]:
+def read_journal_events() -> list[dict[str, object]]:
     """Read the journal events; check and drop each time stamp."""
     events = read_journal(Path())
     for event in events:
-        assert TIME.fullmatch(str(event.pop("time")))
+        assert TIME_PATTERN.fullmatch(str(event.pop("time")))
     return events
 
 
-def output(run: str, stream: str) -> str:
+def read_output(node_run: str, stream: str) -> str:
     """Read one output file of a node run."""
-    return (RUN_DIR / f"{run}.{stream}").read_text()
+    return (RUN_DIR / f"{node_run}.{stream}").read_text()
 
 
-def record_files() -> list[str]:
+def list_record_files() -> list[str]:
     """List the run directory."""
     return sorted(path.name for path in RUN_DIR.iterdir())
 
 
 def test_run_journals_every_node_run_and_the_stop(
-    dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+    project: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    project, _ = dirs
-    write(project, "loop", LOOP)
+    write_workflow(project, "loop", LOOP_WORKFLOW)
     assert main(["run", "loop", "issue #5"]) == 0
     assert capsys.readouterr().out == "check: fail\ncheck: pass\nEND · spent 0s\n"
-    assert journal() == [
+    assert read_journal_events() == [
         {"event": "run", "workflow": "loop", "input": "issue #5"},
         {"event": "start", "node": "check#1", "handoff": None},
-        {"event": "end", "node": "check#1", "outcome": "fail", "target": "check", **END},
+        {
+            "event": "end",
+            "node": "check#1",
+            "outcome": "fail",
+            "target": "check",
+            **COMMAND_END_FIELDS,
+        },
         {"event": "start", "node": "check#2", "handoff": None},
-        {"event": "end", "node": "check#2", "outcome": "pass", "target": "END", **END},
+        {
+            "event": "end",
+            "node": "check#2",
+            "outcome": "pass",
+            "target": "END",
+            **COMMAND_END_FIELDS,
+        },
         {"event": "stop", "reason": "end", "node": "check"},
     ]
-    assert read_state()["node_runs"] == {"check": 2}
+    assert read_project_state()["node_runs"] == {"check": 2}
 
 
 def test_command_node_runs_leave_both_output_files(
-    dirs: tuple[Path, Path], capfd: pytest.CaptureFixture[str]
+    project: Path, capfd: pytest.CaptureFixture[str]
 ) -> None:
-    project, _ = dirs
-    write(project, "echo", MINIMAL.replace('"true"', "\"sh -c 'echo out; echo err >&2'\""))
+    write_workflow(
+        project, "echo", MINIMAL_WORKFLOW.replace('"true"', "\"sh -c 'echo out; echo err >&2'\"")
+    )
     assert main(["run", "echo", "input"]) == 0
     assert capfd.readouterr() == ("check: pass\nEND · spent 0s\n", "")
-    assert output("check#1", "stdout") == "out\n"
-    assert output("check#1", "stderr") == "err\n"
+    assert read_output("check#1", "stdout") == "out\n"
+    assert read_output("check#1", "stderr") == "err\n"
 
 
 def test_agent_node_runs_keep_the_raw_stream_json(
-    dirs: tuple[Path, Path], fake_claude: None, capfd: pytest.CaptureFixture[str]
+    project: Path, fake_claude: None, capfd: pytest.CaptureFixture[str]
 ) -> None:
-    project, _ = dirs
-    write(project, "agents", AGENT)
-    write_agent(project, "planner", PLANNER)
+    write_workflow(project, "agents", AGENT_WORKFLOW)
+    write_agent(project, "planner", PLANNER_AGENT)
     lines = [
         '{"type": "system"}',
         '{"type": "assistant"}',
-        outcome_response("done", "Plan.", 0.5),
+        build_outcome_response("done", "Plan.", 0.5),
         '{"type": "system", "subtype": "task_summary"}',
         "not json",
     ]
@@ -132,12 +149,12 @@ def test_agent_node_runs_keep_the_raw_stream_json(
     )
     assert main(["run", "agents", "issue #9"]) == 0
     assert capfd.readouterr() == ("plan: done\nEND · spent 0s · $0.50\n", "")
-    assert output("plan#1", "stdout") == "\n".join(lines) + "\n"
-    assert output("plan#1", "stderr") == "warning\n"
-    [args] = spawn_args(project)
-    assert flag_value(args, "--output-format") == "stream-json"
-    assert "--verbose" in args
-    assert journal()[2] == {
+    assert read_output("plan#1", "stdout") == "\n".join(lines) + "\n"
+    assert read_output("plan#1", "stderr") == "warning\n"
+    [argv] = read_spawn_argv(project)
+    assert find_flag_value(argv, "--output-format") == "stream-json"
+    assert "--verbose" in argv
+    assert read_journal_events()[2] == {
         "event": "end",
         "node": "plan#1",
         "outcome": "done",
@@ -145,47 +162,49 @@ def test_agent_node_runs_keep_the_raw_stream_json(
         "target": "END",
         "map": None,
         "cost": 0.5,
-        "spent_time": SPENT,
+        "spent_time": NEAR_ZERO_SECONDS,
         "spent_cost": 0.5,
     }
 
 
-def test_node_runs_read_no_stdin(dirs: tuple[Path, Path]) -> None:
-    project, _ = dirs
+def test_node_runs_read_no_stdin(project: Path) -> None:
     # ponytail: /proc is Linux-only; the test suite already assumes a POSIX sh.
-    write(project, "stdin", MINIMAL.replace('"true"', "\"sh -c 'readlink /proc/$$/fd/0'\""))
+    write_workflow(
+        project, "stdin", MINIMAL_WORKFLOW.replace('"true"', "\"sh -c 'readlink /proc/$$/fd/0'\"")
+    )
     assert main(["run", "stdin", "input"]) == 0
-    assert output("check#1", "stdout") == "/dev/null\n"
+    assert read_output("check#1", "stdout") == "/dev/null\n"
 
 
 def test_fanned_out_ends_carry_map_and_no_spent_amounts_and_a_gate_parks(
-    dirs: tuple[Path, Path], fake_claude: None
+    project: Path, fake_claude: None
 ) -> None:
-    project, _ = dirs
-    write(project, "fan", GATED_FAN)
-    for agent in ("tester", "reviewer"):
-        write_agent(project, agent, f"You are the {agent}.")
-    respond_agent(project, "tester", outcome_response("pass", "Tests green.", 0.75))
-    respond_agent(
+    write_workflow(project, "fan", GATED_FAN_WORKFLOW)
+    for agent_name in ("tester", "reviewer"):
+        write_agent(project, agent_name, f"You are the {agent_name}.")
+    queue_agent_responses(project, "tester", build_outcome_response("pass", "Tests green.", 0.75))
+    queue_agent_responses(
         project, "reviewer", json.dumps({"type": "result", "is_error": True, "total_cost_usd": 0.5})
     )
     assert main(["run", "fan", "issue #9"]) == 4
-    events = journal()
+    events = read_journal_events()
     assert events[:2] == [
         {"event": "run", "workflow": "fan", "input": "issue #9"},
         {"event": "start", "node": "checks#1", "handoff": None},
     ]
-    child = {"handoff": None, "target": None, "map": "checks"}
-    assert sorted(events[2:8], key=lambda e: (str(e["node"]), e["event"] != "start")) == [
+    fanned_out_fields = {"handoff": None, "target": None, "map": "checks"}
+    assert sorted(
+        events[2:8], key=lambda event: (str(event["node"]), event["event"] != "start")
+    ) == [
         {"event": "start", "node": "lint#1", "handoff": None, "map": "checks"},
-        {"event": "end", "node": "lint#1", "outcome": "pass", "cost": 0, **child},
+        {"event": "end", "node": "lint#1", "outcome": "pass", "cost": 0, **fanned_out_fields},
         {"event": "start", "node": "review#1", "handoff": None, "map": "checks"},
         {
             "event": "end",
             "node": "review#1",
             "failure": "node 'review': agent reported an error",
             "cost": 0.5,
-            **child,
+            **fanned_out_fields,
         },
         {"event": "start", "node": "test#1", "handoff": None, "map": "checks"},
         {
@@ -193,7 +212,7 @@ def test_fanned_out_ends_carry_map_and_no_spent_amounts_and_a_gate_parks(
             "node": "test#1",
             "outcome": "pass",
             "cost": 0.75,
-            **{**child, "handoff": "Tests green."},
+            **{**fanned_out_fields, "handoff": "Tests green."},
         },
     ]
     assert events[8:] == [
@@ -205,12 +224,12 @@ def test_fanned_out_ends_carry_map_and_no_spent_amounts_and_a_gate_parks(
             "target": "approve",
             "map": None,
             "cost": 1.25,
-            "spent_time": SPENT,
+            "spent_time": NEAR_ZERO_SECONDS,
             "spent_cost": 1.25,
         },
         {"event": "stop", "reason": "gate", "node": "approve"},
     ]
-    assert record_files() == [
+    assert list_record_files() == [
         "journal.jsonl",
         "lint#1.stderr",
         "lint#1.stdout",
@@ -223,16 +242,17 @@ def test_fanned_out_ends_carry_map_and_no_spent_amounts_and_a_gate_parks(
 
 
 def test_decisions_and_grants_are_fields_of_the_resume_event(
-    dirs: tuple[Path, Path], fake_claude: None
+    project: Path, fake_claude: None
 ) -> None:
-    project, _ = dirs
-    write(project, "fan", GATED_FAN)
-    for agent in ("tester", "reviewer"):
-        write_agent(project, agent, f"You are the {agent}.")
-        respond_agent(project, agent, outcome_response("pass"), outcome_response("pass"))
+    write_workflow(project, "fan", GATED_FAN_WORKFLOW)
+    for agent_name in ("tester", "reviewer"):
+        write_agent(project, agent_name, f"You are the {agent_name}.")
+        queue_agent_responses(
+            project, agent_name, build_outcome_response("pass"), build_outcome_response("pass")
+        )
     assert main(["run", "fan", "issue #9"]) == 4
     assert main(["resume", "--decision", "reject", "--feedback", "Again."]) == 4
-    events = journal()
+    events = read_journal_events()
     assert events[10:12] == [
         {"event": "resume", "decision": "reject", "feedback": "Again."},
         {
@@ -242,76 +262,85 @@ def test_decisions_and_grants_are_fields_of_the_resume_event(
         },
     ]
     assert events[-1] == {"event": "stop", "reason": "gate", "node": "approve"}
-    assert {"lint#1.stdout", "lint#2.stdout"} <= set(record_files())
+    assert {"lint#1.stdout", "lint#2.stdout"} <= set(list_record_files())
     assert main(["resume", "--decision", "accept"]) == 0
-    assert journal()[-2:] == [
+    assert read_journal_events()[-2:] == [
         {"event": "resume", "decision": "accept", "feedback": None},
         {"event": "stop", "reason": "end", "node": "approve"},
     ]
-    cost_run(project, 1.5, 0.5)
+    set_up_cost_run(project, 1.5, 0.5)
     assert main(["run", "cost", "input"]) == 5
-    assert journal()[-1] == {"event": "stop", "reason": "budget", "node": "build"}
+    assert read_journal_events()[-1] == {"event": "stop", "reason": "budget", "node": "build"}
     assert main(["resume", "--add-cost", "1"]) == 0
-    assert journal()[-4] == {"event": "resume", "add_cost": 1.0}
+    assert read_journal_events()[-4] == {"event": "resume", "add_cost": 1.0}
 
 
-def test_time_grants_are_fields_of_the_resume_event(dirs: tuple[Path, Path]) -> None:
-    project, _ = dirs
-    write(project, "soft", SOFT)
+def test_time_grants_are_fields_of_the_resume_event(project: Path) -> None:
+    write_workflow(project, "soft", SOFT_WORKFLOW)
     assert main(["run", "soft", "input"]) == 5
-    assert journal()[-1] == {"event": "stop", "reason": "budget", "node": "wait"}
+    assert read_journal_events()[-1] == {"event": "stop", "reason": "budget", "node": "wait"}
     assert main(["resume", "--add-time", "1s"]) == 0
-    assert journal()[4] == {"event": "resume", "add_time": 1.0}
+    assert read_journal_events()[4] == {"event": "resume", "add_time": 1.0}
 
 
-def test_limit_diversion_journals_a_limit_event(dirs: tuple[Path, Path]) -> None:
-    project, _ = dirs
-    write(project, "spin", SPIN)
+def test_limit_diversion_journals_a_limit_event(project: Path) -> None:
+    write_workflow(project, "spin", SPIN_WORKFLOW)
     assert main(["run", "spin", "input"]) == 0
-    assert journal()[5:] == [
+    assert read_journal_events()[5:] == [
         {"event": "limit", "node": "spin", "target": "END"},
         {"event": "stop", "reason": "end", "node": "spin"},
     ]
 
 
-def test_escalation_is_named_in_the_journal_and_the_state(dirs: tuple[Path, Path]) -> None:
-    project, _ = dirs
-    write(project, "spin", SPIN.replace('LIMIT = "END"\n', ""))
+def test_escalation_is_named_in_the_journal_and_the_state(
+    project: Path,
+) -> None:
+    write_workflow(project, "spin", SPIN_WORKFLOW.replace('LIMIT = "END"\n', ""))
     assert main(["run", "spin", "input"]) == 3
-    assert journal()[-1] == {"event": "stop", "reason": "escalation", "node": "spin"}
-    assert read_state()["stopped"] == "escalation"
+    assert read_journal_events()[-1] == {"event": "stop", "reason": "escalation", "node": "spin"}
+    assert read_project_state()["stopped"] == "escalation"
 
 
-def test_failure_journals_the_end_and_resume_appends(dirs: tuple[Path, Path]) -> None:
-    project, _ = dirs
-    write(project, "fixable", BROKEN.replace("workgraph-no-such-cmd", "./fixit"))
+def test_failure_journals_the_end_and_resume_appends(project: Path) -> None:
+    write_workflow(project, "fixable", BROKEN_WORKFLOW.replace("workgraph-no-such-cmd", "./fixit"))
     assert main(["run", "fixable", "input"]) == 2
     message = "node 'check': spawn failure: [Errno 2] No such file or directory: './fixit'"
-    assert journal()[2:] == [
-        {"event": "end", "node": "check#1", "failure": message, "target": None, **END},
+    assert read_journal_events()[2:] == [
+        {
+            "event": "end",
+            "node": "check#1",
+            "failure": message,
+            "target": None,
+            **COMMAND_END_FIELDS,
+        },
         {"event": "stop", "reason": "failure", "node": "check"},
     ]
     fixit = project / "fixit"
     fixit.write_text("#!/bin/sh\nexit 0\n")
     fixit.chmod(0o755)
     assert main(["resume"]) == 0
-    assert journal()[4:] == [
+    assert read_journal_events()[4:] == [
         {"event": "resume"},
         {"event": "start", "node": "check#2", "handoff": None},
-        {"event": "end", "node": "check#2", "outcome": "pass", "target": "END", **END},
+        {
+            "event": "end",
+            "node": "check#2",
+            "outcome": "pass",
+            "target": "END",
+            **COMMAND_END_FIELDS,
+        },
         {"event": "stop", "reason": "end", "node": "check"},
     ]
-    assert {"check#1.stdout", "check#2.stdout"} <= set(record_files())
+    assert {"check#1.stdout", "check#2.stdout"} <= set(list_record_files())
 
 
-def test_a_second_run_wipes_the_run_directory(dirs: tuple[Path, Path]) -> None:
-    project, _ = dirs
-    write(project, "broken", BROKEN)
-    write(project, "loop", LOOP)
+def test_a_second_run_wipes_the_run_directory(project: Path) -> None:
+    write_workflow(project, "broken", BROKEN_WORKFLOW)
+    write_workflow(project, "loop", LOOP_WORKFLOW)
     assert main(["run", "broken", "input"]) == 2
     assert main(["run", "loop", "input"]) == 0
-    assert journal()[0] == {"event": "run", "workflow": "loop", "input": "input"}
-    assert record_files() == [
+    assert read_journal_events()[0] == {"event": "run", "workflow": "loop", "input": "input"}
+    assert list_record_files() == [
         "check#1.stderr",
         "check#1.stdout",
         "check#2.stderr",
@@ -322,11 +351,10 @@ def test_a_second_run_wipes_the_run_directory(dirs: tuple[Path, Path]) -> None:
 
 
 def test_show_node_reads_the_stopped_node_of_a_failed_run(
-    dirs: tuple[Path, Path], fake_claude: None, capsys: pytest.CaptureFixture[str]
+    project: Path, fake_claude: None, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    project, _ = dirs
-    write(project, "agents", AGENT)
-    write_agent(project, "planner", PLANNER)
+    write_workflow(project, "agents", AGENT_WORKFLOW)
+    write_agent(project, "planner", PLANNER_AGENT)
     (project / "bin" / "claude").write_text("#!/bin/sh\necho 'thinking'\necho 'boom' >&2\nexit 1\n")
     assert main(["run", "agents", "input"]) == 2
     capsys.readouterr()
