@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.2.1 (2026-09-03)
+
+### Patch
+
+- Split the README reference sections into one page per topic under docs/
+  ([`8eb574b`](https://github.com/sylmarien/workgraph/commit/8eb574b9651deaf8523e168dec3dd5e10c21b37a))
+
+
 ## v0.2.0 (2026-09-03)
 
 
