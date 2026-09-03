@@ -3,6 +3,7 @@ name: Release
 on:
   push:
     branches: [main]
+  workflow_dispatch: {}
 
 permissions:
   contents: write
@@ -13,8 +14,9 @@ concurrency:
 jobs:
   release:
     # Merge with "[skip release]" in the commit message to hold off the
-    # automatic patch bump, e.g. before a manual minor/major bump.
-    if: "!contains(github.event.head_commit.message, '[skip release]')"
+    # automatic patch bump, e.g. before a manual minor/major bump. A manual
+    # run (workflow_dispatch) always goes ahead, skip marker or not.
+    if: "github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[skip release]')"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
