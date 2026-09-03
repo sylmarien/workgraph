@@ -80,9 +80,9 @@ def read_journal_events() -> list[dict[str, object]]:
     return events
 
 
-def read_output(node_run: str, stream: str) -> str:
+def read_output(node_run_name: str, stream: str) -> str:
     """Read one output file of a node run."""
-    return (RUN_DIR / f"{node_run}.{stream}").read_text()
+    return (RUN_DIR / f"{node_run_name}.{stream}").read_text()
 
 
 def list_record_files() -> list[str]:
@@ -359,6 +359,6 @@ def test_show_node_reads_the_stopped_node_of_a_failed_run(
     assert main(["run", "agents", "input"]) == 2
     capsys.readouterr()
     assert main(["show-node", "plan"]) == 0
-    out = capsys.readouterr().out
-    assert "\n── stderr ──\nboom\n" in out
-    assert "\n── outcome ──\nfailure: node 'plan': " in out
+    output = capsys.readouterr().out
+    assert "\n── stderr ──\nboom\n" in output
+    assert "\n── outcome ──\nfailure: node 'plan': " in output

@@ -116,9 +116,9 @@ def test_a_run_that_exits_without_a_stop_is_an_error(
         lambda: append_events(dev_project, PARKED_EVENTS[11]), (dev_project / LOCK_FILE).unlink
     )
     assert main(["show-journal", "--follow"]) == 1
-    out, err = capsys.readouterr()
-    assert out.endswith("\n2026-08-31T12:01:40+02:00  checks: LIMIT → ship\n")
-    assert err == "the run stopped without a stop event\n"
+    output, error_output = capsys.readouterr()
+    assert output.endswith("\n2026-08-31T12:01:40+02:00  checks: LIMIT → ship\n")
+    assert error_output == "the run stopped without a stop event\n"
 
 
 # checks#2 in progress: lint#2 and test#2 are running.
@@ -170,9 +170,9 @@ def test_ctrl_c_ends_the_follow_silently(
     (dev_project / LOCK_FILE).touch()
     queue_actions(lambda: os.kill(os.getpid(), signal.SIGINT))
     assert main(["show-journal", "--follow"]) == 130
-    out, err = capsys.readouterr()
-    assert out.endswith("\n2026-08-31T12:01:40+02:00  plan#2: done → checks  9s  $0.10\n")
-    assert err == ""
+    output, error_output = capsys.readouterr()
+    assert output.endswith("\n2026-08-31T12:01:40+02:00  plan#2: done → checks  9s  $0.10\n")
+    assert error_output == ""
 
 
 def test_a_closed_stdout_ends_the_follow_quietly(
@@ -256,9 +256,9 @@ def test_show_node_follow_prints_the_output_as_it_arrives_then_the_end_and_the_o
         ),
     )
     assert main(["show-node", "test", "--follow"]) == 0
-    out, err = capsys.readouterr()
+    output, error_output = capsys.readouterr()
     assert (
-        out
+        output
         == """checks/test#2
 started  2026-08-31T12:01:40+02:00
 
@@ -280,7 +280,7 @@ Green.
 
 """
     )
-    assert err == "warn: [x]\n"
+    assert error_output == "warn: [x]\n"
 
 
 def test_show_node_follow_prints_command_output_unchanged_and_flushes_the_partial_line_at_the_end(
@@ -294,12 +294,13 @@ def test_show_node_follow_prints_command_output_unchanged_and_flushes_the_partia
         lambda: append_events(dev_project, CHECKS_2_ENDED_EVENTS[0]),
     )
     assert main(["show-node", "lint#2", "--follow"]) == 0
-    out, err = capsys.readouterr()
+    output, error_output = capsys.readouterr()
     assert (
         "\n── stdout ──\nprogress\rAll checks passed!\n\tok\n\n"
-        "ended    2026-08-31T12:01:41+02:00  1s\ncost     $0.00\n\n── outcome ──\npass\n\n" in out
+        "ended    2026-08-31T12:01:41+02:00  1s\ncost     $0.00\n\n── outcome ──\npass\n\n"
+        in output
     )
-    assert err == "warn\n"
+    assert error_output == "warn\n"
 
 
 def test_show_node_follow_on_an_ended_node_run_prints_the_same_output_as_without_follow(
@@ -346,6 +347,6 @@ def test_show_node_follow_on_a_run_that_exits_without_a_stop_is_an_error(
     (dev_project / LOCK_FILE).touch()
     queue_actions((dev_project / LOCK_FILE).unlink)
     assert main(["show-node", "test", "--follow"]) == 1
-    out, err = capsys.readouterr()
-    assert out.endswith("\n── stdout ──\n")
-    assert err == "the run stopped without a stop event\n"
+    output, error_output = capsys.readouterr()
+    assert output.endswith("\n── stdout ──\n")
+    assert error_output == "the run stopped without a stop event\n"

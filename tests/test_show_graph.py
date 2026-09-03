@@ -52,9 +52,9 @@ def test_ended_run_draws_the_chain_with_costs_and_the_header(
 ) -> None:
     write_record(dev_project, ENDED_EVENTS)
     assert main(["show-journal", "--graph"]) == 0
-    out = capsys.readouterr().out
-    assert out == GRAPH_ENDED_OUTPUT
-    assert "\x1b" not in out
+    output = capsys.readouterr().out
+    assert output == GRAPH_ENDED_OUTPUT
+    assert "\x1b" not in output
 
 
 def test_a_parked_run_shows_the_gate_waiting(
@@ -62,11 +62,12 @@ def test_a_parked_run_shows_the_gate_waiting(
 ) -> None:
     write_record(dev_project, PARKED_EVENTS)
     assert main(["show-journal", "--graph"]) == 0
-    out = capsys.readouterr().out
+    output = capsys.readouterr().out
     assert re.search(
-        r'^run: dev "issue #5" · spent 1m39s · \$1\.02 · parked at ship for \S+: Ship it\?\n', out
+        r'^run: dev "issue #5" · spent 1m39s · \$1\.02 · parked at ship for \S+: Ship it\?\n',
+        output,
     )
-    assert re.search(r"\n⬡ ship {6}parked \S+\n$", out)
+    assert re.search(r"\n⬡ ship {6}parked \S+\n$", output)
 
 
 def test_a_run_in_progress_shows_the_current_rows_and_the_running_header(
@@ -75,9 +76,13 @@ def test_a_run_in_progress_shows_the_current_rows_and_the_running_header(
     write_record(dev_project, IN_PROGRESS_EVENTS)
     (dev_project / LOCK_FILE).touch()
     assert main(["show-journal", "--graph"]) == 0
-    out = capsys.readouterr().out
-    assert re.search(r"^run: dev \"issue #5\" · spent \S+ · \$1\.02 · running checks#2 \S+…\n", out)
-    assert re.search(r"\n◆ checks#2  \S+… ───┬ ✓ lint#2  1s  pass\n {23}└ ◆ test#2 {2}\S+…\n$", out)
+    output = capsys.readouterr().out
+    assert re.search(
+        r"^run: dev \"issue #5\" · spent \S+ · \$1\.02 · running checks#2 \S+…\n", output
+    )
+    assert re.search(
+        r"\n◆ checks#2  \S+… ───┬ ✓ lint#2  1s  pass\n {23}└ ◆ test#2 {2}\S+…\n$", output
+    )
 
 
 def test_a_failed_run_ends_on_the_failure_row(
@@ -101,9 +106,9 @@ def test_an_escalation_ends_on_the_warn_row(
         [*PLAN_2_ENDED_EVENTS, build_event("stop", 100, reason="escalation", node="checks")],
     )
     assert main(["show-journal", "--graph"]) == 0
-    out = capsys.readouterr().out
-    assert out.startswith('run: dev "issue #5" · spent 1m39s · $1.02 · escalation at checks\n')
-    assert out.endswith("\n⚠ escalation at checks\n")
+    output = capsys.readouterr().out
+    assert output.startswith('run: dev "issue #5" · spent 1m39s · $1.02 · escalation at checks\n')
+    assert output.endswith("\n⚠ escalation at checks\n")
 
 
 def test_an_interrupted_run_names_its_node_and_drops_the_running_durations(
@@ -119,9 +124,9 @@ def test_an_interrupted_run_names_its_node_and_drops_the_running_durations(
     )
     write_state(dev_project, node="checks", spent_time=99, spent_cost=1.0213)
     assert main(["show-journal", "--graph"]) == 0
-    out = capsys.readouterr().out
-    assert out.startswith('run: dev "issue #5" · spent 1m39s · $1.02 · interrupted at checks\n')
-    assert re.search(r"\n◆ checks#2 +─+ ◆ lint#2\n$", out)
+    output = capsys.readouterr().out
+    assert output.startswith('run: dev "issue #5" · spent 1m39s · $1.02 · interrupted at checks\n')
+    assert re.search(r"\n◆ checks#2 +─+ ◆ lint#2\n$", output)
 
 
 def test_a_run_interrupted_before_its_state_names_the_start_node(
@@ -152,17 +157,17 @@ def test_colors_on_a_terminal(
     monkeypatch.delenv("COLORTERM", raising=False)
     write_record(dev_project, ENDED_EVENTS)
     assert main(["show-journal", "--graph"]) == 0
-    out = capsys.readouterr().out
-    assert "\x1b[31m✗ checks#1\x1b[0m" in out
-    assert "\x1b[32m✓ checks#2\x1b[0m" in out
-    assert "\x1b[38;5;248m│ \x1b[0m\x1b[31mfail\x1b[0m" in out
-    assert "\x1b[38;5;248m│ \x1b[0mdone" in out
-    assert "\x1b[38;5;248m└ \x1b[0m◇ test#2" in out
-    assert "\x1b[33m┆ checks → LIMIT\x1b[0m" in out
-    assert "\x1b[31m⬡ ship    \x1b[0m" in out
-    assert "\x1b[32m⬡ ship    \x1b[0m" in out
-    assert "\x1b[32mEND\x1b[0m" in out
-    assert "\x1b[38;5;248m  $0.42\x1b[0m" in out
+    output = capsys.readouterr().out
+    assert "\x1b[31m✗ checks#1\x1b[0m" in output
+    assert "\x1b[32m✓ checks#2\x1b[0m" in output
+    assert "\x1b[38;5;248m│ \x1b[0m\x1b[31mfail\x1b[0m" in output
+    assert "\x1b[38;5;248m│ \x1b[0mdone" in output
+    assert "\x1b[38;5;248m└ \x1b[0m◇ test#2" in output
+    assert "\x1b[33m┆ checks → LIMIT\x1b[0m" in output
+    assert "\x1b[31m⬡ ship    \x1b[0m" in output
+    assert "\x1b[32m⬡ ship    \x1b[0m" in output
+    assert "\x1b[32mEND\x1b[0m" in output
+    assert "\x1b[38;5;248m  $0.42\x1b[0m" in output
 
 
 def test_graph_follow_without_a_terminal_is_an_error(
@@ -228,7 +233,7 @@ def test_graph_follow_advances_the_current_row_and_ends_on_the_punctual_output(
     frames = split_frames(output)
     assert len(frames) == 3
     assert "◆ checks#2" in frames[0]
-    # The current glyph fades: frame pulses 0 and 0.25 give distinct gray levels.
+    # The current glyph fades: frame pulses 0 and 0.25 give distinct grey levels.
     assert "38;2;175;175;175" in output.split("\x1b[H")[1]
     assert "38;2;255;255;255" in output.split("\x1b[H")[2]
     assert main(["show-journal", "--graph"]) == 0

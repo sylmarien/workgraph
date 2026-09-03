@@ -208,11 +208,11 @@ def test_a_run_in_progress_ends_on_the_untimestamped_running_line(
     write_state(dev_project, node="checks", spent_time=99, spent_cost=1.0213)
     (dev_project / LOCK_FILE).touch()
     assert main(["show-journal"]) == 0
-    out = capsys.readouterr().out
+    output = capsys.readouterr().out
     assert re.search(
         r"\n2026-08-31T12:01:41\+02:00  checks/lint#2: pass  1s\n"
         r" {27}running checks/test#2 \S+… · spent 1m39s · \$1\.02\n$",
-        out,
+        output,
     )
 
 
@@ -281,11 +281,11 @@ def test_with_nodes_prints_each_node_run_output_before_its_end_line(
     in_progress_project: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert main(["show-journal", "--with-nodes"]) == 0
-    out = capsys.readouterr().out
-    assert out.startswith(WITH_NODES_OUTPUT)
+    output = capsys.readouterr().out
+    assert output.startswith(WITH_NODES_OUTPUT)
     assert re.fullmatch(
         r"\[workgraph#\] {28}running plan#2 \S+… · spent 1m30s · \$0\.92\n",
-        out.removeprefix(WITH_NODES_OUTPUT),
+        output.removeprefix(WITH_NODES_OUTPUT),
     )
 
 
@@ -304,9 +304,9 @@ def test_with_nodes_raw_prints_the_stream_json_lines(
     in_progress_project: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert main(["show-journal", "--with-nodes", "--raw"]) == 0
-    out = capsys.readouterr().out
-    assert f"[plan#1] {PLAN_STDOUT.splitlines()[0]}\n" in out
-    assert '[plan#2] {"type": "assis\n' in out
+    output = capsys.readouterr().out
+    assert f"[plan#1] {PLAN_STDOUT.splitlines()[0]}\n" in output
+    assert '[plan#2] {"type": "assis\n' in output
 
 
 def test_with_nodes_prints_an_interrupted_node_run_output_before_the_resume_line(
@@ -350,16 +350,16 @@ def test_colors_on_a_terminal(
     monkeypatch.delenv("COLORTERM", raising=False)
     write_record(dev_project, ENDED_EVENTS)
     assert main(["show-journal"]) == 0
-    out = capsys.readouterr().out
+    output = capsys.readouterr().out
     assert (
         "\x1b[38;5;248m2026-08-31T12:00:01+02:00  \x1b[0m\x1b[38;5;248mplan#1: started\x1b[0m"
-        in out
+        in output
     )
-    assert 'run: dev "issue #5"\n' in out
-    assert "\x1b[0mchecks/lint#1: \x1b[32mpass\x1b[0m" in out
-    assert "\x1b[33mchecks: LIMIT → ship\x1b[0m" in out
-    assert "\x1b[31mship: reject\x1b[0m" in out
-    assert "\x1b[32mship: accept\x1b[0m" in out
-    assert "\x1b[1;33mparked at ship: Ship it?\x1b[0m" in out
-    assert "\x1b[32mEND\x1b[0m" in out
-    assert "plan#1: done → checks\x1b[38;5;248m  30s" in out
+    assert 'run: dev "issue #5"\n' in output
+    assert "\x1b[0mchecks/lint#1: \x1b[32mpass\x1b[0m" in output
+    assert "\x1b[33mchecks: LIMIT → ship\x1b[0m" in output
+    assert "\x1b[31mship: reject\x1b[0m" in output
+    assert "\x1b[32mship: accept\x1b[0m" in output
+    assert "\x1b[1;33mparked at ship: Ship it?\x1b[0m" in output
+    assert "\x1b[32mEND\x1b[0m" in output
+    assert "plan#1: done → checks\x1b[38;5;248m  30s" in output

@@ -36,7 +36,7 @@ from workgraph.run import (
 from workgraph.show import (
     Line,
     RecordError,
-    Stderr,
+    StderrLine,
     follow_journal,
     follow_node,
     show_journal,
@@ -64,7 +64,7 @@ def main(argv: list[str] | None = None) -> int:
         case "status":
             return _print_status(args)
         case "show-node":
-            return _report(lambda: _print_lines(_get_node_lines(args)))
+            return _report_exit_code(lambda: _print_lines(_get_node_lines(args)))
         case "show-journal":
             return _show_journal_command(args)
         case "viz":
@@ -226,7 +226,7 @@ def _run(args: argparse.Namespace) -> int:
     def command_action() -> None:
         run_workflow(args.workflow, load_workflow(args.workflow), args.input, args.directory)
 
-    return _report(command_action)
+    return _report_exit_code(command_action)
 
 
 def _resume(args: argparse.Namespace) -> int:
@@ -242,7 +242,7 @@ def _resume(args: argparse.Namespace) -> int:
             args.add_cost,
         )
 
-    return _report(command_action)
+    return _report_exit_code(command_action)
 
 
 def _print_status(args: argparse.Namespace) -> int:
@@ -259,12 +259,12 @@ def _print_status(args: argparse.Namespace) -> int:
             return
         workflow = load_workflow(state["workflow"])
         last_event = journal[-1] if journal else {}
-        reason = last_event["reason"] if last_event.get("event") == "stop" else "interrupted"
+        stop_reason = last_event["reason"] if last_event.get("event") == "stop" else "interrupted"
         question = workflow["nodes"][state["node"]].get("gate")
-        echo(format_stop_line(state, reason, question))
+        echo(format_stop_line(state, stop_reason, question))
         if "reason" in state:
             print(state["reason"])
-        if reason == "gate":
+        if stop_reason == "gate":
             print(format_review_material(state.get("handoff")))
         print(f"spent time: {state.get('spent_time', 0):.0f} s")
         for limit_kind, limit in compute_time_limits(workflow, state).items():
@@ -274,7 +274,7 @@ def _print_status(args: argparse.Namespace) -> int:
             print(f"spent cost: {state.get('spent_cost', 0):.2f} USD")
             print(f"cost limit: {cost_limit:g} USD")
 
-    return _report(command_action)
+    return _report_exit_code(command_action)
 
 
 def _get_node_lines(args: argparse.Namespace) -> Iterable[Line]:
@@ -291,13 +291,13 @@ def _get_journal_lines(args: argparse.Namespace) -> Iterable[Line]:
 
 def _show_journal_command(args: argparse.Namespace) -> int:
     if not args.graph:
-        return _report(lambda: _print_lines(_get_journal_lines(args)))
+        return _report_exit_code(lambda: _print_lines(_get_journal_lines(args)))
     if not (args.follow or args.until_end):
-        return _report(lambda: _print_lines(show_graph(args.directory)))
+        return _report_exit_code(lambda: _print_lines(show_graph(args.directory)))
     if not sys.stdout.isatty():
         print("--graph --follow needs a terminal", file=sys.stderr)
         return 1
-    return _report(lambda: _print_frames(follow_graph(args.directory, args.until_end)))
+    return _report_exit_code(lambda: _print_frames(follow_graph(args.directory, args.until_end)))
 
 
 def _print_frames(frames: Iterable[list[Text]]) -> None:
@@ -314,12 +314,12 @@ def _print_frames(frames: Iterable[list[Text]]) -> None:
 
 
 def _print_lines(lines: Iterable[Line]) -> None:
-    """Print each line as it comes: a str verbatim, a Stderr verbatim on stderr, a Text through rich."""
+    """Print each line as it comes: a str verbatim, a StderrLine verbatim on stderr, a Text through rich."""
     console = Console()
     try:
         for line in lines:
             if isinstance(line, str):
-                stream = sys.stderr if isinstance(line, Stderr) else sys.stdout
+                stream = sys.stderr if isinstance(line, StderrLine) else sys.stdout
                 stream.write(line)
                 stream.flush()
             else:
@@ -329,7 +329,7 @@ def _print_lines(lines: Iterable[Line]) -> None:
         console.on_broken_pipe()
 
 
-def _report(command_action: Callable[[], None]) -> int:
+def _report_exit_code(command_action: Callable[[], None]) -> int:
     try:
         command_action()
     except (WorkflowError, RunInProgress, NothingToResume, DecisionError, RecordError) as error:
@@ -368,12 +368,12 @@ def _print_viz(args: argparse.Namespace) -> int:
     # rows inside boxes, so both stay minimal to keep the graph short.
     # ponytail: linear search over a handful of re-renders; switch to layout math if graphs get big.
     diagram = render_rich(mermaid_source, use_ascii=use_ascii, theme=args.theme, padding_y=0)
-    for spread in range(6, 17, 2):
-        wider = render_rich(
-            mermaid_source, use_ascii=use_ascii, theme=args.theme, padding_x=spread, padding_y=0
+    for padding_x in range(6, 17, 2):
+        wider_diagram = render_rich(
+            mermaid_source, use_ascii=use_ascii, theme=args.theme, padding_x=padding_x, padding_y=0
         )
-        if max(cell_len(line) for line in wider.plain.splitlines()) > console.width:
+        if max(cell_len(line) for line in wider_diagram.plain.splitlines()) > console.width:
             break
-        diagram = wider
+        diagram = wider_diagram
     console.print(diagram, soft_wrap=True)
     return 0
