@@ -311,3 +311,18 @@ def test_a_second_run_wipes_the_run_directory(dirs: tuple[Path, Path]) -> None:
         "journal.jsonl",
         "state.json",
     ]
+
+
+def test_show_node_reads_the_stopped_node_of_a_failed_run(
+    dirs: tuple[Path, Path], fake_claude: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project, _ = dirs
+    write(project, "agents", AGENT)
+    write_agent(project, "planner", PLANNER)
+    (project / "bin" / "claude").write_text("#!/bin/sh\necho 'thinking'\necho 'boom' >&2\nexit 1\n")
+    assert main(["run", "agents", "input"]) == 2
+    capsys.readouterr()
+    assert main(["show-node", "plan"]) == 0
+    out = capsys.readouterr().out
+    assert "\n── stderr ──\nboom\n" in out
+    assert "\n── outcome ──\nfailure: node 'plan': " in out
