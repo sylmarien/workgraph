@@ -12,6 +12,9 @@ concurrency:
 
 jobs:
   release:
+    # Merge with "[skip release]" in the commit message to hold off the
+    # automatic patch bump, e.g. before a manual minor/major bump.
+    if: "!contains(github.event.head_commit.message, '[skip release]')"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
