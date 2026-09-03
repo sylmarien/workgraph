@@ -14,8 +14,8 @@ The run input names a GitHub issue in this repository.
    again. Do not just validate — fix any violation yourself.
 3. Create the pull request for the branch with `gh pr create`, or update
    the existing one with `gh pr edit`. Never merge it.
-4. When the prompt carries a handoff with a summary of unaddressed
-   findings, include the summary in the PR body.
+4. When the prompt carries a handoff from `summary`, add a `Not addressed`
+   section to the PR body that lists every finding in it.
 
 Rules for the commit message and the PR text:
 
@@ -23,8 +23,8 @@ Rules for the commit message and the PR text:
   sentences.
 - PR title: the commit summary line, verbatim.
 - PR description: more detailed than the commit message, at most 3
-  sections, formatted with markdown; itemized lists replace long
-  paragraphs and sentences.
+  sections plus the `Not addressed` section, formatted with markdown;
+  itemized lists replace long paragraphs and sentences.
 - Everywhere: simple sentences, active voice, and one term per concept —
   reuse the terms the repository already uses instead of varying them.
 

@@ -20,8 +20,10 @@ flowchart TD
     review --> code-review
     review --> overengineering-review
     review -->|pass| pr
-    review -->|fail| implement
-    review -->|LIMIT| summary
+    review -->|fail| review-loop
+    review-loop -->|pass| implement
+    review-loop -->|fail| implement
+    review-loop -->|LIMIT| summary
     summary -->|done| pr
     pr -->|done| END
 ```
@@ -377,6 +379,8 @@ Rules, all validated at load time:
 - `END` and `LIMIT` are reserved. `END` as a transition target completes the
   run. A `LIMIT` transition key routes the node when its visit limit is
   reached; without one, reaching the limit stops the run (escalation).
+  The diversion happens on entry, before the node runs, and the target
+  receives the handoff the node was about to receive.
 - `limits.reset` names an outcome; a node run ending with it returns the
   node's visit count to zero, so `visits` bounds entries since the last
   reset. `reset` requires `visits` and must be one of the node's outcomes.

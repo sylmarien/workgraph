@@ -43,11 +43,19 @@ fail = "implement"
 map = ["code-review", "overengineering-review"]
 resolve = "all"
 
-[nodes.review.limits]
-visits = 3
-
 [nodes.review.transitions]
 pass = "pr"
+fail = "review-loop"
+
+# Holds the review limit so the LIMIT diversion carries the review findings.
+[nodes.review-loop]
+command = "true"
+
+[nodes.review-loop.limits]
+visits = 2
+
+[nodes.review-loop.transitions]
+pass = "implement"
 fail = "implement"
 LIMIT = "summary"
 
