@@ -18,7 +18,12 @@ passed verbatim as one argument.
 2. Print `Follow from another terminal: workgraph --directory <directory>
    show-journal --follow`, without `--directory <directory>` when no
    directory was given.
-3. Relay each progress line (`<node>: <outcome>`) as it appears.
+3. Relay each progress line (`<node>: <outcome>`) as it appears. A `LIMIT`
+   diversion prints no progress line. When a line names a node other than
+   the transition target of the previous outcome (`workgraph viz
+   <workflow>` shows the transitions), run `workgraph show-journal` with
+   the same `--directory` and relay its `<node>: LIMIT → <target>` line
+   first.
 4. On stop, report by exit code:
    - 0: the run reached END.
    - 2 (failure) or 3 (escalation): the stopped node and the error line;

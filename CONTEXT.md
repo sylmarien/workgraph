@@ -125,7 +125,7 @@ _Avoid_: Edge (in prose; fine in graph rendering), route
 `END` and `LIMIT`. A reserved name cannot name a node or an outcome. A transition target of `END` marks workflow completion. A transition key of `LIMIT` routes the node when its visit limit is reached.
 
 **Visit limit**:
-The maximum number of times a run may enter a node. Reaching it takes the `LIMIT` transition if one exists; otherwise the run escalates. A node may declare a reset outcome. A node run ending with it returns the count to zero, so the limit bounds entries since the last reset.
+The maximum number of times a run may enter a node. Reaching it takes the `LIMIT` transition if one exists; otherwise the run escalates. The diversion happens on entry, before the node runs, and the target receives the handoff the node was about to receive. A node may declare a reset outcome. A node run ending with it returns the count to zero, so the limit bounds entries since the last reset.
 _Avoid_: Max visits, iteration cap
 
 **Escalate**:

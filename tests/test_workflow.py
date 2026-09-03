@@ -191,7 +191,15 @@ def test_bundled_dev_workflow_declares_the_review_fan_out(
     review = workflow["nodes"]["review"]
     assert review["map"] == ["code-review", "overengineering-review"]
     assert review["resolve"] == "all"
-    assert review["transitions"] == {"pass": "pr", "fail": "implement", "LIMIT": "summary"}
+    assert review["transitions"] == {"pass": "pr", "fail": "review-loop"}
+    review_loop = workflow["nodes"]["review-loop"]
+    assert review_loop["command"] == "true"
+    assert review_loop["limits"] == {"visits": 2}
+    assert review_loop["transitions"] == {
+        "pass": "implement",
+        "fail": "implement",
+        "LIMIT": "summary",
+    }
     assert workflow["nodes"]["test"]["limits"] == {"visits": 5, "reset": "pass"}
 
 
