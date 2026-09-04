@@ -16,6 +16,7 @@ from typing import Any
 from rich.console import Console
 from rich.text import Text
 
+from workgraph.harness import AgentInvocation, HarnessFailure, get_harness, read_result
 from workgraph.workflow import END, LIMIT
 
 RUN_DIR = Path(".workgraph") / "run"
@@ -695,7 +696,7 @@ def _run_agent(
 ) -> tuple[str, str | None, float]:
     """Run the agent; return its outcome, handoff, and the USD cost the harness reported.
 
-    The agent's stdout holds one stream-json event per line; one of them is the result.
+    The agent's stdout holds one JSON event per line; one of them is the result.
     """
     agent_node_name = parse_node_name(node_run_name)
     # The definition resolves from the invocation directory (the process cwd);
@@ -705,41 +706,26 @@ def _run_agent(
     if handoff is not None:
         source, text = handoff
         prompt = f"{run_input}\n\nHandoff from {source}:\n{text}"
-    command = _build_agent_argv(node_definition, defaults, agent_definition, prompt)
-    completed_process = _spawn(node_run_name, command, directory, hard_time_limit, spent_time)
+    harness_name = node_definition.get("harness", defaults.get("harness"))
+    assert isinstance(harness_name, str)
+    agent_harness = get_harness(harness_name)
+    invocation = _build_agent_invocation(
+        node_definition, defaults, agent_definition, prompt, directory
+    )
+    with agent_harness.command(invocation) as command:
+        completed_process = _spawn(node_run_name, command, directory, hard_time_limit, spent_time)
     if completed_process.returncode != 0:
         raise NodeFailure(
             f"node '{agent_node_name}': agent exited with code {completed_process.returncode}"
         )
     stdout_lines = build_output_path(directory, node_run_name, "stdout").read_text().splitlines()
-    result_events = [
-        event for event in iter_stream_events(stdout_lines) if event.get("type") == "result"
-    ]
-    if not result_events:
-        raise NodeFailure(f"node '{agent_node_name}': agent output holds no result event")
-    result_event = result_events[-1]
     try:
-        cost = float(result_event.get("total_cost_usd") or 0)
-    except (TypeError, ValueError):
-        # A malformed cost counts as zero; the run continues.
-        cost = 0.0
-    if result_event.get("is_error"):
-        raise NodeFailure(f"node '{agent_node_name}': agent reported an error", cost)
-    structured_output = result_event.get("structured_output")
-    if (
-        not isinstance(structured_output, dict)
-        or structured_output.get("outcome") not in node_definition["outcomes"]
-    ):
-        raise NodeFailure(
-            f"node '{agent_node_name}': agent reported no outcome from {node_definition['outcomes']}",
-            cost,
+        result = read_result(
+            agent_harness, iter_stream_events(stdout_lines), node_definition["outcomes"]
         )
-    handoff_text = structured_output.get("handoff")
-    return (
-        structured_output["outcome"],
-        str(handoff_text) if handoff_text is not None else None,
-        cost,
-    )
+    except HarnessFailure as error:
+        raise NodeFailure(f"node '{agent_node_name}': {error}", error.cost) from error
+    return result.outcome, result.handoff, result.cost
 
 
 def iter_stream_events(lines: Iterable[str]) -> Iterator[dict[str, Any]]:
@@ -753,56 +739,27 @@ def iter_stream_events(lines: Iterable[str]) -> Iterator[dict[str, Any]]:
             yield event
 
 
-def _build_agent_argv(
+def _build_agent_invocation(
     node_definition: dict[str, Any],
     defaults: dict[str, Any],
     agent_definition: dict[str, str],
     prompt: str,
-) -> list[str]:
-    schema = {
-        "type": "object",
-        "properties": {
-            "outcome": {"enum": node_definition["outcomes"]},
-            "handoff": {
-                "type": "string",
-                "description": "Optional free text delivered to the next node of the workflow.",
-            },
-        },
-        "required": ["outcome"],
-    }
-    agent_name = node_definition["agent"]
-    agents = {
-        agent_name: {
-            "description": agent_definition.get("description", ""),
-            "prompt": agent_definition["prompt"],
-        }
-    }
-    # No --bare: bare mode reads no OAuth credentials, so agent nodes cannot
-    # authenticate for subscription users. Accepted cost: hooks and plugins
-    # load on every spawn.
-    command = [
-        "claude",
-        "-p",
-        prompt,
-        "--output-format",
-        "stream-json",
-        "--verbose",
-        "--json-schema",
-        json.dumps(schema),
-        "--agents",
-        json.dumps(agents),
-        "--agent",
-        agent_name,
-        "--permission-mode",
-        "dontAsk",
-        "--model",
-        node_definition.get("model", defaults.get("model")),
-        "--effort",
-        node_definition.get("effort", defaults.get("effort")),
-    ]
-    if "tools" in agent_definition:
-        command += ["--allowedTools", agent_definition["tools"]]
-    return command
+    directory: Path,
+) -> AgentInvocation:
+    model = node_definition.get("model", defaults.get("model"))
+    effort = node_definition.get("effort", defaults.get("effort"))
+    assert isinstance(model, str) and isinstance(effort, str)
+    return AgentInvocation(
+        agent_name=node_definition["agent"],
+        instructions=agent_definition["prompt"],
+        description=agent_definition.get("description", ""),
+        tools=agent_definition.get("tools"),
+        prompt=prompt,
+        model=model,
+        effort=effort,
+        outcomes=node_definition["outcomes"],
+        directory=directory,
+    )
 
 
 def _load_agent_definition(agent_node_name: str, agent_name: str) -> dict[str, str]:

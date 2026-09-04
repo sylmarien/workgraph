@@ -6,6 +6,8 @@ import tomllib
 from pathlib import Path
 from typing import Any, NoReturn
 
+from workgraph.harness import get_harness_names
+
 END = "END"
 LIMIT = "LIMIT"
 RESERVED_NAMES = frozenset({END, LIMIT})
@@ -204,8 +206,12 @@ def _validate_node(
             if value is None:
                 fail(f"'{setting}' is set neither on the node nor in [defaults]")
         harness = settings["harness"]
-        if harness != "claude":
-            fail(f"harness '{harness}' is not supported; only 'claude' is accepted")
+        accepted_harnesses = get_harness_names()
+        if harness not in accepted_harnesses:
+            fail(
+                f"harness '{harness}' is not supported; accepted harnesses:"
+                f" {', '.join(accepted_harnesses)}"
+            )
     if node_name in fanned_out_by:
         for field in ("transitions", "limits"):
             if field in node_definition:

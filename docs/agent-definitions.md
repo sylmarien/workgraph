@@ -1,9 +1,9 @@
 # Agent definitions
 
-An agent node references an agent definition by name: a file in the Claude
-Code subagent format at `.workgraph/agents/<name>.md` in the invocation
-directory or the home directory, in that order. The file carries no workflow
-contract.
+An agent node references an agent definition by name: a Markdown file with
+optional Claude Code subagent frontmatter at `.workgraph/agents/<name>.md` in
+the invocation directory or the home directory, in that order. The file
+carries no workflow contract.
 
 ```markdown
 ---
@@ -14,11 +14,13 @@ tools: Bash, Read, Edit, Write, Glob, Grep
 The run input names a GitHub issue. Read it, implement it, write tests.
 ```
 
-- The body is the agent's prompt. The run input, plus any handoff, arrives as
-  the user message.
-- `tools` becomes the spawned agent's `--allowedTools`. Agents run with
-  `--permission-mode dontAsk`, so a tool outside the list is denied, not
-  prompted for.
+- The body supplies the agent instructions. The run input, plus any handoff,
+  arrives as the user message.
+- With `harness = "claude"`, `tools` becomes the spawned agent's
+  `--allowedTools`. Claude runs with `--permission-mode dontAsk`, so a tool
+  outside the list is denied, not prompted for.
+- With `harness = "codex"`, `tools` is ignored. Codex runs non-interactively
+  with workspace-write sandboxing and no approval prompts.
 - The workflow's `model` and `effort` always apply; frontmatter never
   overrides them.
 - workgraph requires the agent to report an outcome from the node's

@@ -49,8 +49,8 @@ Without the plugin:
 uv tool install git+https://github.com/sylmarien/workgraph
 ```
 
-Requires Python 3.12+. Agent nodes additionally require the `claude` CLI on
-`PATH`.
+Requires Python 3.12+. Agent nodes additionally require the CLI selected by
+their `harness`: `claude` or `codex` must be on `PATH`.
 
 ## Example
 

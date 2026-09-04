@@ -11,7 +11,7 @@ uses two nodes.
 start = "implement"          # entry node, required
 
 [defaults]                   # per-node settings, overridable on each agent node
-harness = "claude"           # only accepted value
+harness = "claude"           # accepted values: claude, codex
 model = "sonnet"
 effort = "medium"
 
@@ -110,7 +110,8 @@ cost = 5.0                   # stop before the next node once 5 USD are spent
   a non-numeric one, adds nothing; a failed agent run adds the cost it
   reported. The run state
   stores it as `spent_cost`.
-- The harness computes `total_cost_usd` at list API prices. API-key users
+- Codex does not report a USD cost, so a Codex agent node adds zero.
+- Claude computes `total_cost_usd` at list API prices. API-key users
   pay that amount; subscription users see an accounting figure.
 - Before entering a node, when the spent cost is at or past the limit, the
   run stops with exit 5 and `stopped = "budget"`, like a soft time limit.
@@ -129,7 +130,8 @@ Rules, all validated at load time:
 
 - A node declares exactly one of `agent`, `command`, `map`, or `gate`.
 - An agent node declares a non-empty `outcomes` list; `harness`, `model`, and
-  `effort` must each resolve from the node or `[defaults]`.
+  `effort` must each resolve from the node or `[defaults]`. `harness` is
+  `claude` or `codex`.
 - A command node has the fixed outcomes `pass` and `fail`. It declares no
   `outcomes` and no agent settings.
 - A map node also has the fixed outcomes `pass` and `fail`, resolved with

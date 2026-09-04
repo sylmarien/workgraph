@@ -67,6 +67,25 @@ case "$response" in
 esac
 """
 
+FAKE_CODEX = """#!/bin/sh
+printf '%s\\0' "$@" '===' >> codex-calls.txt
+schema=
+prev=
+for arg in "$@"; do
+  [ "$prev" = "--output-schema" ] && schema="$arg"
+  prev="$arg"
+done
+cat "$schema" >> codex-schemas.jsonl
+printf '\\n' >> codex-schemas.jsonl
+IFS= read -r response < responses
+sed -i 1d responses
+case "$response" in
+  EXIT*) exit "${response#EXIT}" ;;
+  SLEEP*) sleep "${response#SLEEP}" ;;
+  *) printf '%s\\n' "$response" ;;
+esac
+"""
+
 
 @pytest.fixture
 def fake_claude(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -75,6 +94,17 @@ def fake_claude(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     bin_dir.mkdir()
     script = bin_dir / "claude"
     script.write_text(FAKE_CLAUDE)
+    script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+
+
+@pytest.fixture
+def fake_codex(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Put a fake codex on PATH that logs its argv and replays canned responses."""
+    bin_dir = project / "bin"
+    bin_dir.mkdir()
+    script = bin_dir / "codex"
+    script.write_text(FAKE_CODEX)
     script.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
 
@@ -275,9 +305,32 @@ def build_outcome_response(
     return json.dumps(result_event)
 
 
+def build_codex_outcome_response(outcome: str, handoff: str | None = None) -> str:
+    """Build a fake Codex event reporting a structured outcome."""
+    structured_output = {"outcome": outcome}
+    if handoff is not None:
+        structured_output["handoff"] = handoff
+    return json.dumps(
+        {
+            "type": "item.completed",
+            "item": {
+                "id": "item_1",
+                "type": "agent_message",
+                "text": json.dumps(structured_output),
+            },
+        }
+    )
+
+
 def read_spawn_argv(project: Path) -> list[list[str]]:
     """Read the argv of each fake-claude spawn, in order."""
     calls_text = (project / "claude-calls.txt").read_text()
+    return [call.split("\0") for call in calls_text.split("\0===\0") if call]
+
+
+def read_codex_spawn_argv(project: Path) -> list[list[str]]:
+    """Read the argv of each fake-codex spawn, in order."""
+    calls_text = (project / "codex-calls.txt").read_text()
     return [call.split("\0") for call in calls_text.split("\0===\0") if call]
 
 

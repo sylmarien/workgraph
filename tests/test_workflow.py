@@ -59,6 +59,13 @@ def test_valid_workflow_renders_expected_mermaid(project: Path) -> None:
     assert render_mermaid(load_workflow("build")) == VALID_MERMAID
 
 
+def test_codex_is_an_accepted_agent_harness(project: Path) -> None:
+    write_workflow(
+        project, "build", VALID_WORKFLOW.replace('harness = "claude"', 'harness = "codex"')
+    )
+    assert load_workflow("build")["defaults"]["harness"] == "codex"
+
+
 MAPPED_WORKFLOW = """
 start = "checks"
 
@@ -386,9 +393,9 @@ INVALID_WORKFLOWS = [
     pytest.param(
         MINIMAL_WORKFLOW.replace(
             'command = "true"',
-            'agent = "worker"\noutcomes = ["pass", "fail"]\nharness = "codex"\nmodel = "opus"\neffort = "high"',
+            'agent = "worker"\noutcomes = ["pass", "fail"]\nharness = "other"\nmodel = "opus"\neffort = "high"',
         ),
-        "node 'check': harness 'codex' is not supported",
+        "node 'check': harness 'other' is not supported; accepted harnesses: claude, codex",
         id="unsupported-harness",
     ),
     pytest.param(

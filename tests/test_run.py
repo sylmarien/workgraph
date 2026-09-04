@@ -19,10 +19,12 @@ from tests.conftest import (
     PLANNER_AGENT,
     SOFT_WORKFLOW,
     SPIN_WORKFLOW,
+    build_codex_outcome_response,
     build_outcome_response,
     find_flag_value,
     queue_agent_responses,
     queue_responses,
+    read_codex_spawn_argv,
     read_project_state,
     read_spawn_argv,
     set_up_cost_run,
@@ -412,6 +414,95 @@ def test_spawn_flags_follow_the_decisions(
     assert "sonnet" not in " ".join(argv)
 
 
+def test_codex_runs_agents_with_structured_output_and_zero_cost(
+    project: Path, fake_codex: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    workflow = TWO_AGENTS_WORKFLOW.replace('harness = "claude"', 'harness = "codex"').replace(
+        'agent = "planner"', 'agent = "planner"\nmodel = "gpt-5.4"'
+    )
+    write_workflow(project, "agents", workflow)
+    write_agent(project, "planner", PLANNER_AGENT)
+    write_agent(project, "builder", "You are the builder.")
+    queue_responses(
+        project,
+        build_codex_outcome_response("done", "Build the small version."),
+        build_codex_outcome_response("done"),
+    )
+
+    assert main(["run", "agents", "issue #9"]) == 0
+    assert capsys.readouterr().out == "plan: done\nbuild: done\nEND · spent 0s\n"
+    planner_argv, builder_argv = read_codex_spawn_argv(project)
+    assert planner_argv[:2] == ["exec", "--json"]
+    assert find_flag_value(planner_argv, "--sandbox") == "workspace-write"
+    assert find_flag_value(planner_argv, "--model") == "gpt-5.4"
+    assert 'model_reasoning_effort="high"' in planner_argv
+    assert 'developer_instructions="You are the planner."' in planner_argv
+    assert "Read, Grep" not in planner_argv
+    assert planner_argv[-1] == "issue #9"
+    assert builder_argv[-1] == "issue #9\n\nHandoff from plan:\nBuild the small version."
+    schemas = [
+        json.loads(line) for line in (project / "codex-schemas.jsonl").read_text().splitlines()
+    ]
+    assert schemas[0]["properties"]["outcome"] == {"enum": ["done"]}
+    assert schemas[1]["properties"]["handoff"]["type"] == "string"
+    assert (
+        json.loads((project / ".workgraph/run/plan#1.stdout").read_text())["type"]
+        == "item.completed"
+    )
+    assert read_project_state()["spent_cost"] == 0
+
+
+@pytest.mark.parametrize(
+    ("response", "message"),
+    [
+        ("EXIT2", "exited with code 2"),
+        ("not json", "holds no result event"),
+        (
+            json.dumps(
+                {
+                    "type": "item.completed",
+                    "item": {"type": "agent_message", "text": "not json"},
+                }
+            ),
+            "reported no outcome",
+        ),
+        (build_codex_outcome_response("maybe"), "reported no outcome"),
+    ],
+)
+def test_codex_failure_stops_the_run(
+    project: Path,
+    fake_codex: None,
+    capsys: pytest.CaptureFixture[str],
+    response: str,
+    message: str,
+) -> None:
+    write_workflow(
+        project, "agents", AGENT_WORKFLOW.replace('harness = "claude"', 'harness = "codex"')
+    )
+    write_agent(project, "planner", PLANNER_AGENT)
+    queue_responses(project, response)
+    assert main(["run", "agents", "input"]) == 2
+    assert message in capsys.readouterr().err
+    assert read_project_state()["spent_cost"] == 0
+
+
+def test_codex_hard_timeout_uses_the_existing_failure_path(
+    project: Path, fake_codex: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    workflow = (
+        AGENT_WORKFLOW.replace('harness = "claude"', 'harness = "codex"')
+        + """
+[budget]
+time_hard = 0.1
+"""
+    )
+    write_workflow(project, "agents", workflow)
+    write_agent(project, "planner", PLANNER_AGENT)
+    queue_responses(project, "SLEEP1")
+    assert main(["run", "agents", "input"]) == 2
+    assert "hard time limit of 0.1 s reached" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize(
     ("response", "message"),
     [
@@ -478,12 +569,16 @@ def test_missing_agent_definition_stops_the_run(
     assert read_project_state()["visits"] == {"plan": 1}
 
 
+@pytest.mark.parametrize("harness", ["claude", "codex"])
 def test_unspawnable_harness_stops_the_run(
     project: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    harness: str,
 ) -> None:
-    write_workflow(project, "agents", AGENT_WORKFLOW)
+    write_workflow(
+        project, "agents", AGENT_WORKFLOW.replace('harness = "claude"', f'harness = "{harness}"')
+    )
     write_agent(project, "planner", PLANNER_AGENT)
     empty_bin_dir = project / "empty_bin_dir-bin"
     empty_bin_dir.mkdir()
