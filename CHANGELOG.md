@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.2.3 (2026-09-04)
+
+### Patch
+
+- Add Codex agent harness
+  ([`7977c7c`](https://github.com/sylmarien/workgraph/commit/7977c7c2205ccf974ee2722d0ca43cf367bed760))
+
+
 ## v0.2.2 (2026-09-04)
 
 ### Patch
