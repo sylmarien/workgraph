@@ -2,8 +2,8 @@
 
 An agent node references an agent definition by name: a file in the Claude
 Code subagent format at `.workgraph/agents/<name>.md` in the invocation
-directory or the home directory, in that order. The file carries no workflow
-contract.
+directory or the home directory, in that order. Both harnesses read the same
+format. The file carries no workflow contract.
 
 ```markdown
 ---
@@ -14,16 +14,21 @@ tools: Bash, Read, Edit, Write, Glob, Grep
 The run input names a GitHub issue. Read it, implement it, write tests.
 ```
 
-- The body is the agent's prompt. The run input, plus any handoff, arrives as
-  the user message.
-- `tools` becomes the spawned agent's `--allowedTools`. Agents run with
+- The body is the agent's prompt. Claude receives it as the subagent prompt
+  through `--agents`; Codex receives it as `developer_instructions`. The run
+  input, plus any handoff, arrives as the user message.
+- `tools` becomes Claude's `--allowedTools`. Claude agents run with
   `--permission-mode dontAsk`, so a tool outside the list is denied, not
-  prompted for.
+  prompted for. Codex ignores `tools` and runs with
+  `--sandbox workspace-write`.
 - The workflow's `model` and `effort` always apply; frontmatter never
-  overrides them.
+  overrides them. They map to Claude's `--model` and `--effort`, and to
+  Codex's `--model` and `model_reasoning_effort`.
 - workgraph requires the agent to report an outcome from the node's
-  `outcomes` via an injected JSON schema. A malformed outcome report is a
-  failure, not a misroute.
+  `outcomes` via an injected JSON schema. The schema goes to Claude as
+  `--json-schema` and to Codex as `--output-schema`; the final Codex agent
+  message carries the JSON. A malformed outcome report is a failure, not a
+  misroute.
 
 ## The /workgraph skill
 

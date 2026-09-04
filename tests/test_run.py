@@ -3,6 +3,7 @@
 import json
 import re
 import time
+import tomllib
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -20,16 +21,20 @@ from tests.conftest import (
     PLANNER_AGENT,
     SOFT_WORKFLOW,
     SPIN_WORKFLOW,
+    build_codex_event,
+    build_codex_response,
     build_outcome_response,
     find_flag_value,
     queue_agent_responses,
     queue_responses,
     read_project_state,
     read_spawn_argv,
+    select_codex_harness,
     set_up_cost_run,
     write_agent,
     write_workflow,
 )
+from workgraph import codex
 from workgraph.cli import main
 from workgraph.run import JOURNAL_FILE, LOCK_FILE, STATE_FILE
 
@@ -479,12 +484,16 @@ def test_missing_agent_definition_stops_the_run(
     assert read_project_state()["visits"] == {"plan": 1}
 
 
+@pytest.mark.parametrize(
+    "workflow_toml", [AGENT_WORKFLOW, select_codex_harness(AGENT_WORKFLOW)], ids=["claude", "codex"]
+)
 def test_unspawnable_harness_stops_the_run(
     project: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    workflow_toml: str,
 ) -> None:
-    write_workflow(project, "agents", AGENT_WORKFLOW)
+    write_workflow(project, "agents", workflow_toml)
     write_agent(project, "planner", PLANNER_AGENT)
     empty_bin_dir = project / "empty_bin_dir-bin"
     empty_bin_dir.mkdir()
@@ -2063,3 +2072,219 @@ def test_every_stop_ends_on_the_stop_line(
     write_workflow(project, workflow_name, workflow_toml)
     assert main(["run", workflow_name, "input"]) == exit_code
     assert capsys.readouterr().out == expected_output
+
+
+def test_codex_argv_carries_the_definition_model_effort_and_schema(
+    project: Path, fake_codex: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_workflow(
+        project,
+        "agents",
+        select_codex_harness(AGENT_WORKFLOW).replace(
+            'agent = "planner"', 'agent = "planner"\nmodel = "gpt-5"'
+        ),
+    )
+    write_agent(project, "planner", PLANNER_AGENT)
+    queue_responses(project, build_codex_response("done"))
+    assert main(["run", "agents", "issue #9"]) == 0
+    assert capsys.readouterr().out == "plan: done\nEND · spent 0s\n"
+    # read_spawn_argv drops the executable name; codex-calls.txt names it.
+    [argv] = read_spawn_argv(project, "codex")
+    assert argv[:2] == ["exec", "--json"]
+    assert "--skip-git-repo-check" in argv
+    assert find_flag_value(argv, "--sandbox") == "workspace-write"
+    assert find_flag_value(argv, "--model") == "gpt-5"
+    assert [argv[index + 1] for index, arg in enumerate(argv) if arg == "-c"] == [
+        'model_reasoning_effort="high"',
+        'developer_instructions="You are the planner."',
+    ]
+    assert argv[-2:] == ["--", "issue #9"]
+    # Codex ignores the definition's tools.
+    assert "Read, Grep" not in argv
+    # The response holds no usage event, so the node run adds nothing to the spent cost.
+    assert read_project_state()["spent_cost"] == 0
+    # Codex structured output is OpenAI strict mode.
+    schema = json.loads((project / "output-schema.json").read_text())
+    assert schema["properties"]["outcome"] == {"enum": ["done"]}
+    assert schema["properties"]["handoff"]["type"] == ["string", "null"]
+    assert schema["required"] == ["outcome", "handoff"]
+    assert schema["additionalProperties"] is False
+    assert not Path(find_flag_value(argv, "--output-schema")).exists()
+
+
+def build_codex_usage(**usage: object) -> str:
+    return json.dumps({"type": "turn.completed", "usage": usage})
+
+
+def test_a_codex_node_run_estimates_its_cost_from_its_usage(
+    project: Path, fake_codex: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_workflow(
+        project,
+        "agents",
+        select_codex_harness(AGENT_WORKFLOW).replace('model = "opus"', 'model = "gpt-5.4"'),
+    )
+    write_agent(project, "planner", PLANNER_AGENT)
+    usage = build_codex_usage(
+        input_tokens=100_000,
+        cached_input_tokens=80_000,
+        output_tokens=10_000,
+        reasoning_output_tokens=4_000,
+    )
+    # The fake replays a tab-separated response as several stdout lines.
+    queue_responses(project, f"{build_codex_response('done')}\t{usage}")
+    assert main(["run", "agents", "issue #9"]) == 0
+    assert capsys.readouterr().out == "plan: done\nEND · spent 0s · $0.22\n"
+    assert read_project_state()["spent_cost"] == pytest.approx(0.22)
+
+
+@pytest.mark.parametrize(
+    ("auth_mode", "cost"),
+    [("chatgpt", 0.0244), ("apikey", 0.0294), (None, 0.0294)],
+    ids=["chatgpt", "apikey", "no auth file"],
+)
+def test_codex_cache_writes_are_priced_by_the_login(
+    home: Path, auth_mode: str | None, cost: float
+) -> None:
+    if auth_mode is not None:
+        auth_file = home / ".codex" / "auth.json"
+        auth_file.parent.mkdir()
+        auth_file.write_text(json.dumps({"auth_mode": auth_mode}))
+    usage = {"input_tokens": 3_000, "cached_input_tokens": 1_000, "cache_write_input_tokens": 1_000}
+    assert codex._estimate_cost_usd(
+        "gpt-5.6-sol", {**usage, "output_tokens": 1_000}
+    ) == pytest.approx(cost)
+
+
+def test_codex_rates_cover_pro_cached_input_and_the_gpt_5_6_alias() -> None:
+    cached_only = {"input_tokens": 1_000_000, "cached_input_tokens": 1_000_000, "output_tokens": 0}
+    assert codex._estimate_cost_usd("gpt-5.5-pro", cached_only) == 30.0
+    assert codex._estimate_cost_usd("gpt-5.6", cached_only) == codex._estimate_cost_usd(
+        "gpt-5.6-sol", cached_only
+    )
+
+
+@pytest.mark.parametrize(
+    ("model", "usage"),
+    [
+        ("unknown-model", {"input_tokens": 100, "output_tokens": 10}),
+        ("gpt-5.4", None),
+        ("gpt-5.4", {"output_tokens": 10}),
+        ("gpt-5.4", {"input_tokens": "many", "output_tokens": 10}),
+        ("gpt-5.4", {"input_tokens": -1, "output_tokens": 10}),
+        ("gpt-5.4", {"input_tokens": 10, "cached_input_tokens": 20, "output_tokens": 10}),
+    ],
+    ids=["unknown model", "no usage", "missing count", "non-numeric", "negative", "over-cached"],
+)
+def test_codex_cost_degrades_to_zero(model: str, usage: object) -> None:
+    assert codex._estimate_cost_usd(model, usage) == 0.0
+
+
+def test_codex_developer_instructions_survive_toml_parsing(project: Path, fake_codex: None) -> None:
+    agent_body = 'You are the planner.\nUse "quotes" and é.'
+    write_workflow(project, "agents", select_codex_harness(AGENT_WORKFLOW))
+    write_agent(project, "planner", agent_body)
+    queue_responses(project, build_codex_response("done"))
+    assert main(["run", "agents", "issue #9"]) == 0
+    [argv] = read_spawn_argv(project, "codex")
+    setting = next(
+        argv[index + 1]
+        for index, arg in enumerate(argv)
+        if arg == "-c" and argv[index + 1].startswith("developer_instructions=")
+    )
+    assert tomllib.loads(setting)["developer_instructions"] == agent_body
+
+
+def test_codex_run_delivers_the_input_and_the_handoff(
+    project: Path, fake_codex: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_workflow(project, "pair", select_codex_harness(TWO_AGENTS_WORKFLOW))
+    write_agent(project, "planner", PLANNER_AGENT)
+    write_agent(project, "builder", "You are the builder.")
+    queue_responses(
+        project,
+        build_codex_response("done", handoff="Split the work in two."),
+        build_codex_response("rework"),
+        build_codex_response("done"),
+        build_codex_response("done"),
+    )
+    assert main(["run", "pair", "issue #9"]) == 0
+    assert (
+        capsys.readouterr().out
+        == "plan: done\nbuild: rework\nplan: done\nbuild: done\nEND · spent 0s\n"
+    )
+    assert [argv[-1] for argv in read_spawn_argv(project, "codex")] == [
+        "issue #9",
+        "issue #9\n\nHandoff from plan:\nSplit the work in two.",
+        "issue #9",
+        "issue #9",
+    ]
+    assert "handoff" not in read_project_state()
+
+
+@pytest.mark.parametrize(
+    ("response", "message"),
+    [
+        ("EXIT2", "exited with code 2"),
+        (
+            json.dumps({"type": "turn.failed", "error": {"message": "boom"}}),
+            "reported an error: boom",
+        ),
+        (json.dumps({"type": "error", "message": "boom"}), "reported an error: boom"),
+        (json.dumps({"type": "turn.failed", "error": "boom"}), "reported an error: boom"),
+        (json.dumps({"type": "turn.failed", "error": None}), "reported an error: None"),
+        (json.dumps({"type": "item.completed", "item": None}), "holds no agent message"),
+        (build_codex_event("agent_message"), "holds no agent message"),
+        (build_codex_event("agent_message", text=5), "holds no agent message"),
+        (build_codex_event("agent_message", text="not json"), "reported no outcome"),
+        (build_codex_event("agent_message", text='{"outcome": "maybe"}'), "reported no outcome"),
+        (json.dumps({"type": "turn.completed"}), "holds no agent message"),
+        ("not json", "holds no agent message"),
+    ],
+)
+def test_each_codex_failure_kind_stops_the_run(
+    project: Path,
+    fake_codex: None,
+    capsys: pytest.CaptureFixture[str],
+    response: str,
+    message: str,
+) -> None:
+    write_workflow(project, "agents", select_codex_harness(AGENT_WORKFLOW))
+    write_agent(project, "planner", PLANNER_AGENT)
+    queue_responses(project, response)
+    assert main(["run", "agents", "input"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == "plan: failure\nfailure at plan · spent 0s\n"
+    assert "node 'plan'" in captured.err
+    assert message in captured.err
+    assert read_project_state()["visits"] == {"plan": 1}
+    assert not LOCK_FILE.exists()
+
+
+def test_a_codex_node_run_stops_at_the_hard_time_limit(
+    project: Path, fake_codex: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_workflow(
+        project,
+        "agents",
+        select_codex_harness(AGENT_WORKFLOW).replace(
+            "[defaults]", "[budget]\ntime_hard = 0.3\n\n[defaults]"
+        ),
+    )
+    write_agent(project, "planner", PLANNER_AGENT)
+    queue_responses(project, "SLEEP5")
+    assert main(["run", "agents", "input"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == "plan: failure\nfailure at plan · spent 0s\n"
+    assert captured.err == "node 'plan': hard time limit of 0.3 s reached\n"
+
+
+def test_a_codex_node_run_keeps_the_jsonl_in_its_stdout_file(
+    project: Path, fake_codex: None
+) -> None:
+    write_workflow(project, "agents", select_codex_harness(AGENT_WORKFLOW))
+    write_agent(project, "planner", PLANNER_AGENT)
+    response = build_codex_response("done")
+    queue_responses(project, response)
+    assert main(["run", "agents", "input"]) == 0
+    assert (STATE_FILE.parent / "plan#1.stdout").read_text() == f"{response}\n"

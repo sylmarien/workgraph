@@ -6,6 +6,8 @@ import tomllib
 from pathlib import Path
 from typing import Any, NoReturn
 
+from workgraph.harness import HARNESS_NAMES
+
 END = "END"
 LIMIT = "LIMIT"
 RESERVED_NAMES = frozenset({END, LIMIT})
@@ -68,6 +70,13 @@ def parse_cost(cost: object) -> float:
     if not usd > 0:
         raise ValueError(message)
     return usd
+
+
+def resolve_agent_settings(
+    node_definition: dict[str, Any], defaults: dict[str, Any]
+) -> dict[str, Any]:
+    """Return the agent settings of a node: its own value, else the default."""
+    return {key: node_definition.get(key, defaults.get(key)) for key in AGENT_SETTINGS}
 
 
 def render_mermaid(workflow: dict[str, Any]) -> str:
@@ -199,13 +208,14 @@ def _validate_node(
         for outcome in outcomes:
             if outcome in RESERVED_NAMES:
                 fail(f"'{outcome}' is reserved and cannot name an outcome")
-        settings = {key: node_definition.get(key, defaults.get(key)) for key in AGENT_SETTINGS}
+        settings = resolve_agent_settings(node_definition, defaults)
         for setting, value in settings.items():
             if value is None:
                 fail(f"'{setting}' is set neither on the node nor in [defaults]")
         harness = settings["harness"]
-        if harness != "claude":
-            fail(f"harness '{harness}' is not supported; only 'claude' is accepted")
+        if harness not in HARNESS_NAMES:
+            accepted = ", ".join(repr(name) for name in HARNESS_NAMES)
+            fail(f"harness '{harness}' is not supported; accepted: {accepted}")
     if node_name in fanned_out_by:
         for field in ("transitions", "limits"):
             if field in node_definition:
