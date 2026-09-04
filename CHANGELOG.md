@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.2.2 (2026-09-04)
+
+### Patch
+
+- Freeze the clock in the tests that measure a running duration
+  ([`4ecf9d2`](https://github.com/sylmarien/workgraph/commit/4ecf9d2d179132ac917862191958a7b575b9a991))
+
+
 ## v0.2.1 (2026-09-03)
 
 ### Patch
