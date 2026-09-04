@@ -2,7 +2,6 @@
 
 import json
 import os
-import textwrap
 import time
 from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime
@@ -11,6 +10,7 @@ from typing import Any
 
 from rich.text import Text
 
+from workgraph.harness import Harness, find_harness, split_lines
 from workgraph.run import (
     GREY,
     JOURNAL_FILE,
@@ -19,11 +19,10 @@ from workgraph.run import (
     format_running_line,
     format_stop_line,
     is_in_progress,
-    iter_stream_events,
     parse_node_name,
     read_state,
 )
-from workgraph.workflow import load_workflow
+from workgraph.workflow import load_workflow, resolve_agent_settings
 
 # No node run name ends with '#'.
 WORKGRAPH_ORIGIN = "workgraph#"
@@ -92,6 +91,7 @@ class _RunRecord:
         workflow = load_workflow(self.events[0]["workflow"])
         self.nodes: dict[str, dict[str, Any]] = workflow["nodes"]
         self.start_node: str = workflow["start"]
+        self.defaults: dict[str, Any] = workflow.get("defaults", {})
 
     def read_events(self) -> None:
         """Append the events written since the last read; sample the lock first.
@@ -125,9 +125,12 @@ class _RunRecord:
     def find_node_definition(self, node_run_name: str) -> dict[str, Any]:
         return self.nodes[parse_node_name(node_run_name)]
 
-    def is_transcript(self, node_run_name: str, raw: bool) -> bool:
-        """Return whether a node run's stdout renders as a transcript."""
-        return "agent" in self.find_node_definition(node_run_name) and not raw
+    def find_transcript_harness(self, node_run_name: str, raw: bool) -> Harness | None:
+        """Return the harness that renders a node run's stdout; None when it renders unchanged."""
+        node_definition = self.find_node_definition(node_run_name)
+        if raw or "agent" not in node_definition:
+            return None
+        return find_harness(resolve_agent_settings(node_definition, self.defaults)["harness"])
 
     @property
     def stop_event(self) -> Event | None:
@@ -174,13 +177,14 @@ def follow_node(directory: Path, node_run_identifier: str, raw: bool) -> Iterato
     )
     if output_readers is None:
         yield Text("(none: map node)", GREY)
+    transcript_harness = record.find_transcript_harness(node_run_name, raw)
     while True:
         output_complete = node_run_name in record.end_events or record.stop_event is not None
         if output_readers is not None:
             stdout_lines, stderr_lines = (
                 reader.read_lines(include_partial=output_complete) for reader in output_readers
             )
-            yield from _render_output_lines(stdout_lines, record.is_transcript(node_run_name, raw))
+            yield from _render_output_lines(stdout_lines, transcript_harness)
             if stderr_lines:
                 yield StderrLine("\n".join(stderr_lines) + "\n")
         if output_complete:
@@ -201,8 +205,10 @@ def _render_node_run(record: _RunRecord, node_run_name: str, raw: bool) -> list[
         stdout_body = stderr_body = [Text("(none: map node)", GREY)]
     else:
         stdout_reader, stderr_reader = _open_outputs(record.directory, node_run_name)
-        stdout_body = _render_whole_output(stdout_reader, record.is_transcript(node_run_name, raw))
-        stderr_body = _render_whole_output(stderr_reader, False)
+        stdout_body = _render_whole_output(
+            stdout_reader, record.find_transcript_harness(node_run_name, raw)
+        )
+        stderr_body = _render_whole_output(stderr_reader, None)
     return [
         *_render_header(start_event),
         *_render_status(record, node_run_name, now),
@@ -250,7 +256,7 @@ def _render_footer(record: _RunRecord, node_run_name: str, now: datetime | None)
     end_event = record.end_events.get(node_run_name)
     return [
         *_render_section("outcome", _render_outcome(record, node_run_name, now)),
-        *_render_section("handoff", _split_lines(end_event["handoff"] if end_event else None)),
+        *_render_section("handoff", split_lines(end_event["handoff"] if end_event else None)),
     ]
 
 
@@ -338,8 +344,9 @@ class _JournalRenderer:
         stdout_reader, stderr_reader = self.output_readers[node_run_name]
         origin = _format_display_name(self.record.start_events[node_run_name])
         stdout_lines = stdout_reader.read_lines(include_partial)
-        if self.record.is_transcript(node_run_name, self.raw):
-            for transcript_row in _render_transcript(stdout_lines):
+        transcript_harness = self.record.find_transcript_harness(node_run_name, self.raw)
+        if transcript_harness is not None:
+            for transcript_row in transcript_harness.render_transcript(stdout_lines):
                 yield _render_origin(origin).append_text(transcript_row)
         else:
             for stdout_line in stdout_lines:
@@ -467,59 +474,32 @@ def _render_section(title: str, body: Sequence[Line]) -> list[Line]:
     return [_render_heading(title), *(body or [Text("(none)", GREY)]), Text()]
 
 
-def _split_lines(text: str | None) -> list[Text]:
-    """Split on newlines only; a `\\r` or `\\f` stays in its line."""
-    lines = (text or "").split("\n")
-    if not lines[-1]:
-        lines.pop()
-    return [Text(line) for line in lines]
-
-
 def _render_input(run_input: str, handoff: dict[str, str] | None) -> list[Line]:
     """Return the prompt as `run._run_agent` builds it: the run input, then the delivered handoff."""
     lines: list[Line] = [Text(run_input)]
     if handoff:
         lines += [Text(), Text(f"Handoff from {handoff['source']}:", "bold")]
-        lines += _split_lines(handoff["text"])
+        lines += split_lines(handoff["text"])
     return lines
 
 
-def _render_whole_output(output_reader: _LineReader, is_transcript: bool) -> Sequence[Line]:
+def _render_whole_output(
+    output_reader: _LineReader, transcript_harness: Harness | None
+) -> Sequence[Line]:
     """Return the whole node run output for show-node; `(empty)` for an empty file."""
     output_lines = output_reader.read_lines(include_partial=True)
     if not output_lines:
         return [Text("(empty)", GREY)]
-    return _render_output_lines(output_lines, is_transcript)
+    return _render_output_lines(output_lines, transcript_harness)
 
 
-def _render_output_lines(lines: Sequence[str], is_transcript: bool) -> Sequence[Line]:
+def _render_output_lines(
+    lines: Sequence[str], transcript_harness: Harness | None
+) -> Sequence[Line]:
     """Render output lines: a transcript, or the lines unchanged as one str ending in a newline."""
-    if is_transcript:
-        return _render_transcript(lines)
+    if transcript_harness is not None:
+        return transcript_harness.render_transcript(lines)
     return ["\n".join(lines) + "\n"] if lines else []
-
-
-def _render_transcript(lines: Sequence[str]) -> list[Text]:
-    """Render the text blocks and tool calls of stream-json lines. Drop every other line."""
-    transcript_rows: list[Text] = []
-    for stream_event in iter_stream_events(lines):
-        if stream_event.get("type") != "assistant":
-            continue
-        for block in stream_event["message"]["content"]:
-            if block["type"] == "text":
-                transcript_rows += _split_lines(block["text"])
-            elif block["type"] == "tool_use" and block["name"] != "StructuredOutput":
-                transcript_rows.append(
-                    Text(f"▸ {block['name']}: {_summarize_tool_input(block['input'])}", "bold")
-                )
-    return transcript_rows
-
-
-def _summarize_tool_input(tool_input: dict[str, Any]) -> str:
-    for key in ("command", "file_path", "pattern", "url"):
-        if key in tool_input:
-            return str(tool_input[key])
-    return textwrap.shorten(json.dumps(tool_input), 100, placeholder="...")
 
 
 def _render_outcome(record: _RunRecord, node_run_name: str, now: datetime | None) -> list[Line]:

@@ -51,12 +51,13 @@ pass = "END"
 fail = "END"
 """
 
-FAKE_CLAUDE = """#!/bin/sh
-printf '%s\\0' "$@" '===' >> claude-calls.txt
+FAKE_HARNESS = """#!/bin/sh
+printf '%s\\0' "$@" '===' >> "$(basename "$0")-calls.txt"
 agent=
 prev=
 for arg in "$@"; do
   [ "$prev" = "--agent" ] && agent="$arg"
+  [ "$prev" = "--output-schema" ] && cp "$arg" output-schema.json
   prev="$arg"
 done
 file="responses-$agent"
@@ -65,20 +66,32 @@ IFS= read -r response < "$file"
 sed -i 1d "$file"
 case "$response" in
   EXIT*) exit "${response#EXIT}" ;;
-  *) printf '%s\\n' "$response" ;;
+  SLEEP*) exec sleep "${response#SLEEP}" ;;
+  *) printf '%s\\n' "$response" | tr '\\t' '\\n' ;;
 esac
 """
 
 
-@pytest.fixture
-def fake_claude(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Put a fake claude on PATH that logs its argv and replays canned responses."""
+def install_fake_harness(project: Path, monkeypatch: pytest.MonkeyPatch, harness_name: str) -> None:
+    """Put a fake harness CLI on PATH that logs its argv and replays queued responses."""
     bin_dir = project / "bin"
-    bin_dir.mkdir()
-    script = bin_dir / "claude"
-    script.write_text(FAKE_CLAUDE)
+    bin_dir.mkdir(exist_ok=True)
+    script = bin_dir / harness_name
+    script.write_text(FAKE_HARNESS)
     script.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+
+
+@pytest.fixture
+def fake_claude(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Put a fake claude on PATH."""
+    install_fake_harness(project, monkeypatch, "claude")
+
+
+@pytest.fixture
+def fake_codex(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Put a fake codex on PATH."""
+    install_fake_harness(project, monkeypatch, "codex")
 
 
 @pytest.fixture
@@ -295,9 +308,25 @@ def build_outcome_response(
     return json.dumps(result_event)
 
 
-def read_spawn_argv(project: Path) -> list[list[str]]:
-    """Read the argv of each fake-claude spawn, in order."""
-    calls_text = (project / "claude-calls.txt").read_text()
+def build_codex_event(item_type: str, **item_fields: object) -> str:
+    """Build a fake codex completed item event of the type, carrying the fields."""
+    return json.dumps({"type": "item.completed", "item": {"type": item_type, **item_fields}})
+
+
+def build_codex_response(outcome: str, handoff: str | None = None) -> str:
+    """Build a fake codex agent message reporting the outcome; strict mode nulls an absent handoff."""
+    structured_output = {"outcome": outcome, "handoff": handoff}
+    return build_codex_event("agent_message", text=json.dumps(structured_output))
+
+
+def select_codex_harness(workflow_toml: str) -> str:
+    """Return the workflow with its harness setting switched to codex."""
+    return workflow_toml.replace('harness = "claude"', 'harness = "codex"')
+
+
+def read_spawn_argv(project: Path, harness_name: str = "claude") -> list[list[str]]:
+    """Read the argv of each fake-harness spawn, in order."""
+    calls_text = (project / f"{harness_name}-calls.txt").read_text()
     return [call.split("\0") for call in calls_text.split("\0===\0") if call]
 
 

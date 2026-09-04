@@ -11,7 +11,7 @@ uses two nodes.
 start = "implement"          # entry node, required
 
 [defaults]                   # per-node settings, overridable on each agent node
-harness = "claude"           # only accepted value
+harness = "claude"           # "claude" or "codex"
 model = "sonnet"
 effort = "medium"
 
@@ -110,8 +110,15 @@ cost = 5.0                   # stop before the next node once 5 USD are spent
   a non-numeric one, adds nothing; a failed agent run adds the cost it
   reported. The run state
   stores it as `spent_cost`.
-- The harness computes `total_cost_usd` at list API prices. API-key users
-  pay that amount; subscription users see an accounting figure.
+- A Claude node run reports `total_cost_usd`, computed at list API prices.
+  API-key users pay that amount; subscription users see an accounting figure.
+- A Codex node run reports an estimate computed from its token usage at
+  list API prices for the requested model. The login mode in
+  `~/.codex/auth.json` selects the billing rules: a ChatGPT login pays
+  nothing for cache writes; an API key, or no readable auth file, pays the
+  listed rate. The estimate is not an invoice amount. A model without a
+  known rate, usage the estimate cannot read, or a failed Codex node run
+  adds nothing.
 - Before entering a node, when the spent cost is at or past the limit, the
   run stops with exit 5 and `stopped = "budget"`, like a soft time limit.
   The node run in progress always finishes; there is no mid-node cost check.
@@ -129,7 +136,8 @@ Rules, all validated at load time:
 
 - A node declares exactly one of `agent`, `command`, `map`, or `gate`.
 - An agent node declares a non-empty `outcomes` list; `harness`, `model`, and
-  `effort` must each resolve from the node or `[defaults]`.
+  `effort` must each resolve from the node or `[defaults]`. `harness` is
+  `claude` or `codex`.
 - A command node has the fixed outcomes `pass` and `fail`. It declares no
   `outcomes` and no agent settings.
 - A map node also has the fixed outcomes `pass` and `fail`, resolved with

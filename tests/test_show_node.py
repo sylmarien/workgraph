@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from tests.conftest import write_workflow
+from tests.conftest import build_codex_event, write_workflow
 from workgraph.cli import main
 from workgraph.run import LOCK_FILE, RUN_DIR
 
@@ -45,6 +45,11 @@ outcomes = ["pass"]
 
 PLAN_HANDOFF = "Plan.\nTwo steps."
 CHECKS_HANDOFF = "test:\nGreen."
+
+
+def read_stdout_section(output: str) -> str:
+    """Return the stdout section of a show-node output."""
+    return output.partition("── stdout ──\n")[2].partition("\n── stderr ──")[0]
 
 
 def build_event(kind: str, offset_seconds: int, **fields: Any) -> dict[str, Any]:
@@ -246,8 +251,7 @@ def test_raw_prints_the_stream_json_file_unchanged(
     stdout = PLAN_STDOUT + "partial\r\t"
     write_record(recorded_project, TEST_2_ENDED_EVENTS, {"plan#1.stdout": stdout})
     assert main(["show-node", "--raw", "plan#1"]) == 0
-    output = capsys.readouterr().out
-    stdout_section = output.partition("── stdout ──\n")[2].partition("\n── stderr ──")[0]
+    stdout_section = read_stdout_section(capsys.readouterr().out)
     # The file lacks a final newline; show-node adds one so the next section starts on its own line.
     assert stdout_section == stdout + "\n"
 
@@ -465,3 +469,77 @@ def test_secondary_text_is_grey66_on_a_terminal(
     assert "\x1b[38;5;248m── input ──\x1b[0m" in output
     assert "\x1b[32mpass\x1b[0m" in output
     assert "\x1b[2m" not in output
+
+
+CODEX_STDOUT = "\n".join(
+    [
+        json.dumps({"type": "thread.started", "thread_id": "thread_1"}),
+        json.dumps({"type": "turn.started"}),
+        json.dumps({"type": "item.completed", "item": None}),
+        build_codex_event("reasoning", text="Read first."),
+        json.dumps(
+            {
+                "type": "item.started",
+                "item": {"type": "command_execution", "command": "bash -lc ls"},
+            }
+        ),
+        build_codex_event(
+            "command_execution",
+            command="bash -lc ls",
+            aggregated_output="run.py\n",
+            exit_code=0,
+            status="completed",
+        ),
+        build_codex_event("agent_message", text="Reading run.py.\nDone."),
+        build_codex_event(
+            "agent_message", text=json.dumps({"outcome": "done", "handoff": "Now editing."})
+        ),
+        build_codex_event("agent_message", text=json.dumps({"outcome": "done", "handoff": None})),
+        build_codex_event("agent_message", text='{"note": "prose that is a JSON object"}'),
+        build_codex_event(
+            "file_change",
+            changes=[{"path": "src/workgraph/run.py", "kind": "update"}],
+            status="completed",
+        ),
+        build_codex_event("agent_message", text=json.dumps(STRUCTURED_OUTPUT)),
+        json.dumps({"type": "turn.completed"}),
+        "",
+    ]
+)
+CODEX_TRANSCRIPT = """▸ command_execution: bash -lc ls
+Reading run.py.
+Done.
+Now editing.
+{"note": "prose that is a JSON object"}
+▸ file_change: src/workgraph/run.py
+Plan.
+Two steps.
+"""
+
+
+@pytest.fixture
+def codex_project(project: Path, utc_plus_2: None) -> Path:
+    """Write the dev workflow with a Codex plan node and a run record holding Codex stdout."""
+    write_workflow(
+        project,
+        "dev",
+        DEV_WITHOUT_GATE_WORKFLOW.replace(
+            'agent = "planner"', 'agent = "planner"\nharness = "codex"'
+        ),
+    )
+    write_record(project, TEST_2_ENDED_EVENTS, {"plan#1.stdout": CODEX_STDOUT})
+    return project
+
+
+def test_codex_node_run_renders_its_agent_messages(
+    codex_project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["show-node", "plan#1"]) == 0
+    assert read_stdout_section(capsys.readouterr().out) == CODEX_TRANSCRIPT
+
+
+def test_codex_raw_prints_the_file_unchanged(
+    codex_project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["show-node", "--raw", "plan#1"]) == 0
+    assert read_stdout_section(capsys.readouterr().out) == CODEX_STDOUT

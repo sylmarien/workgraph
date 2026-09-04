@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from tests.conftest import MINIMAL_WORKFLOW, write_workflow
+from workgraph.harness import HARNESS_NAMES
 from workgraph.workflow import WorkflowError, load_workflow, parse_duration, render_mermaid
 
 VALID_WORKFLOW = """
@@ -57,6 +58,25 @@ flowchart TD
 def test_valid_workflow_renders_expected_mermaid(project: Path) -> None:
     write_workflow(project, "build", VALID_WORKFLOW)
     assert render_mermaid(load_workflow("build")) == VALID_MERMAID
+
+
+@pytest.mark.parametrize("harness_name", HARNESS_NAMES)
+def test_every_accepted_harness_loads(project: Path, harness_name: str) -> None:
+    write_workflow(
+        project,
+        "build",
+        VALID_WORKFLOW.replace('harness = "claude"', f'harness = "{harness_name}"'),
+    )
+    assert load_workflow("build")["defaults"]["harness"] == harness_name
+
+
+def test_a_node_selects_a_harness_over_the_default(project: Path) -> None:
+    write_workflow(
+        project,
+        "build",
+        VALID_WORKFLOW.replace('agent = "reviewer"', 'agent = "reviewer"\nharness = "codex"'),
+    )
+    assert load_workflow("build")["nodes"]["review"]["harness"] == "codex"
 
 
 MAPPED_WORKFLOW = """
@@ -386,9 +406,9 @@ INVALID_WORKFLOWS = [
     pytest.param(
         MINIMAL_WORKFLOW.replace(
             'command = "true"',
-            'agent = "worker"\noutcomes = ["pass", "fail"]\nharness = "codex"\nmodel = "opus"\neffort = "high"',
+            'agent = "worker"\noutcomes = ["pass", "fail"]\nharness = "gemini"\nmodel = "opus"\neffort = "high"',
         ),
-        "node 'check': harness 'codex' is not supported",
+        "node 'check': harness 'gemini' is not supported; accepted: 'claude', 'codex'",
         id="unsupported-harness",
     ),
     pytest.param(

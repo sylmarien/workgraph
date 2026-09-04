@@ -12,11 +12,11 @@ from termaid import render_rich
 from termaid.renderer.themes import THEMES
 
 from workgraph.graph import follow_graph, show_graph
+from workgraph.harness import NodeFailure
 from workgraph.run import (
     BudgetStop,
     DecisionError,
     Escalation,
-    NodeFailure,
     NothingToResume,
     Park,
     RunInProgress,
@@ -127,7 +127,7 @@ def _add_show_node_parser(
     )
     show_node_parser.add_argument("node_run", help="<node>#<n>, or <node> for its last node run.")
     show_node_parser.add_argument(
-        "--raw", action="store_true", help="Print agent stdout as the stream-json lines."
+        "--raw", action="store_true", help="Print agent stdout as the harness's JSONL lines."
     )
     show_node_parser.add_argument(
         "--follow",
@@ -148,7 +148,7 @@ def _add_show_journal_parser(
         help="Print every node run's output before its end line, each line with its origin.",
     )
     show_journal_parser.add_argument(
-        "--raw", action="store_true", help="Print agent stdout as the stream-json lines."
+        "--raw", action="store_true", help="Print agent stdout as the harness's JSONL lines."
     )
     show_journal_parser.add_argument(
         "--follow",

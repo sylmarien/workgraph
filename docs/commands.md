@@ -30,7 +30,7 @@
   are local ISO 8601. The sections follow:
   - `input`: the run input and the delivered handoff.
   - `stdout` and `stderr`: the node run output. Agent stdout renders as a
-    transcript; `--raw` prints the stream-json lines instead.
+    transcript; `--raw` prints the harness's JSONL lines instead.
   - `outcome`: `<outcome> → <target>`; a map node run lists its children.
   - `handoff`: the emitted handoff.
 

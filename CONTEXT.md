@@ -48,7 +48,7 @@ The specification of the agent an agent node runs, written in the harness's nati
 _Avoid_: Agent spec, agent config
 
 **Harness**:
-The runtime that executes an agent.
+The runtime that executes an agent: `claude` (Claude Code) or `codex` (the Codex CLI), selected by the `harness` setting. Claude reports the cost of a node run; Codex reports token usage, from which workgraph estimates the cost.
 
 **Run**:
 One execution of a workflow, from its start node until `END`, a failure, an escalation, a park, or a budget stop.
@@ -67,7 +67,7 @@ The stdout and stderr the process of a node run writes. workgraph keeps them for
 _Avoid_: Logs, capture
 
 **Transcript**:
-The rendered view of an agent node run's stdout: the text blocks and one `▸ <tool>: <summary>` line per tool call. show-node and show-journal `--with-nodes` drop thinking, the StructuredOutput call, tool results, and the system, rate-limit, and result lines.
+The rendered view of an agent node run's stdout. A Claude node run renders its text blocks and one `▸ <tool>: <summary>` line per tool call; show-node and show-journal `--with-nodes` drop thinking, the StructuredOutput call, tool results, and the system, rate-limit, and result lines. A Codex node run renders the narration of its agent messages and one `▸ <item type>: <summary>` line per command execution and file change. Reasoning and every other item are dropped.
 _Avoid_: Log, conversation
 
 **Journal**:
