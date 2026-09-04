@@ -6,10 +6,12 @@ import time
 from collections import deque
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, tzinfo
 from pathlib import Path
 
 import pytest
 
+from workgraph import graph, run, show
 from workgraph.run import STATE_FILE
 
 QueuedAction = Callable[[], None]
@@ -95,6 +97,24 @@ def project(tmp_path: Path, home: Path, monkeypatch: pytest.MonkeyPatch) -> Path
     project.mkdir()
     monkeypatch.chdir(project)
     return project
+
+
+FROZEN_NOW = datetime(2026, 8, 31, 10, 2, 0, tzinfo=UTC)
+
+
+class FrozenDatetime(datetime):
+    """A datetime whose now() is FROZEN_NOW, so running durations do not drift with the clock."""
+
+    @classmethod
+    def now(cls, tz: tzinfo | None = None) -> "FrozenDatetime":
+        return cls.fromtimestamp(FROZEN_NOW.timestamp(), tz=tz or UTC)
+
+
+@pytest.fixture
+def frozen_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Freeze the wall clock of every module that reads it."""
+    for module in (graph, run, show):
+        monkeypatch.setattr(module, "datetime", FrozenDatetime)
 
 
 @pytest.fixture

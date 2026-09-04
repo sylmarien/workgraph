@@ -13,6 +13,7 @@ from tests.conftest import (
     AGENT_WORKFLOW,
     BROKEN_WORKFLOW,
     COST_WORKFLOW,
+    FROZEN_NOW,
     LOOP_WORKFLOW,
     MINIMAL_WORKFLOW,
     NEAR_ZERO_SECONDS,
@@ -1284,6 +1285,7 @@ def test_status_without_a_run_exits_with_an_error(
 )
 def test_status_reports_the_run_in_progress_from_the_last_start(
     project: Path,
+    frozen_clock: None,
     capsys: pytest.CaptureFixture[str],
     events: list[dict[str, Any]],
     expected_line: str,
@@ -1292,11 +1294,12 @@ def test_status_reports_the_run_in_progress_from_the_last_start(
     STATE_FILE.write_text(
         json.dumps({"workflow": "fan", "input": "i", "node": "checks", "spent_time": 65})
     )
-    # Each event's `ago` is its age in seconds, resolved to a time stamp now.
-    now = datetime.now(UTC)
+    # Each event's `ago` is its age in seconds, resolved against the frozen clock.
     events = [{"event": "run", "ago": 60, "workflow": "fan", "input": "i"}, *events]
     for event in events:
-        event["time"] = (now - timedelta(seconds=event.pop("ago"))).isoformat(timespec="seconds")
+        event["time"] = (FROZEN_NOW - timedelta(seconds=event.pop("ago"))).isoformat(
+            timespec="seconds"
+        )
     JOURNAL_FILE.write_text(
         "".join(json.dumps(event) + "\n" for event in events) + '{"event": "sta'
     )
