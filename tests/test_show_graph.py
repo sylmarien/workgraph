@@ -70,19 +70,26 @@ def test_a_parked_run_shows_the_gate_waiting(
     assert re.search(r"\n⬡ ship {6}parked \S+\n$", output)
 
 
+GRAPH_IN_PROGRESS_OUTPUT = """run: dev "issue #5" · spent 1m59s · $1.02 · running checks#2 20s…
+
+◇ plan#1    30s  $0.42
+│ done
+✗ checks#1  1m00s ─────┬ ✓ lint#1  2s  pass
+│ fail                 └ ✗ test#1  1m00s  $0.50  failure
+◇ plan#2    9s  $0.10
+│ done
+◆ checks#2  20s… ──────┬ ✓ lint#2  1s  pass
+                       └ ◆ test#2  20s…
+"""
+
+
 def test_a_run_in_progress_shows_the_current_rows_and_the_running_header(
-    dev_project: Path, capsys: pytest.CaptureFixture[str]
+    dev_project: Path, frozen_clock: None, capsys: pytest.CaptureFixture[str]
 ) -> None:
     write_record(dev_project, IN_PROGRESS_EVENTS)
     (dev_project / LOCK_FILE).touch()
     assert main(["show-journal", "--graph"]) == 0
-    output = capsys.readouterr().out
-    assert re.search(
-        r"^run: dev \"issue #5\" · spent \S+ · \$1\.02 · running checks#2 \S+…\n", output
-    )
-    assert re.search(
-        r"\n◆ checks#2  \S+… ───┬ ✓ lint#2  1s  pass\n {23}└ ◆ test#2 {2}\S+…\n$", output
-    )
+    assert capsys.readouterr().out == GRAPH_IN_PROGRESS_OUTPUT
 
 
 def test_a_failed_run_ends_on_the_failure_row(
