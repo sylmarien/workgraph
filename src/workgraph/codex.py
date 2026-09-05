@@ -14,11 +14,14 @@ from workgraph.harness import AgentInvocation, NodeFailure, iter_jsonl_events, s
 
 # USD per million tokens: uncached input, cached input, cache write, output.
 # A Pro model offers no cached input discount, so its cached rate is its input rate.
-# Source: https://developers.openai.com/api/docs/pricing, read 2026-09-04.
+# Source: https://developers.openai.com/api/docs/pricing, read 2026-09-05.
 MODEL_RATES: dict[str, tuple[float, float, float, float]] = {
     "gpt-6-astra": (10.00, 1.00, 12.50, 50.00),
     "gpt-5.6-sol": (4.00, 0.40, 5.00, 20.00),
     "gpt-5.6": (4.00, 0.40, 5.00, 20.00),  # the documented alias of gpt-5.6-sol
+    "gpt-daybreak-blue-latest": (4.00, 0.40, 5.00, 20.00),  # the Daybreak alias of gpt-5.6-sol
+    "gpt-5.6-cyber": (12.50, 1.25, 15.625, 75.00),
+    "gpt-daybreak-red-latest": (12.50, 1.25, 15.625, 75.00),  # the Daybreak alias of gpt-5.6-cyber
     "gpt-5.6-terra": (2.00, 0.20, 2.50, 12.00),
     "gpt-5.6-luna": (0.20, 0.02, 0.25, 1.20),
     "gpt-5.5": (5.00, 0.50, 0.0, 30.00),

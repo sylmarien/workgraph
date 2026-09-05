@@ -2279,12 +2279,21 @@ def test_codex_cache_writes_are_priced_by_the_login(
     ) == pytest.approx(cost)
 
 
-def test_codex_rates_cover_pro_cached_input_and_the_gpt_5_6_alias() -> None:
+def test_codex_rates_cover_pro_cached_input() -> None:
     cached_only = {"input_tokens": 1_000_000, "cached_input_tokens": 1_000_000, "output_tokens": 0}
     assert codex._estimate_cost_usd("gpt-5.5-pro", cached_only) == 30.0
-    assert codex._estimate_cost_usd("gpt-5.6", cached_only) == codex._estimate_cost_usd(
-        "gpt-5.6-sol", cached_only
-    )
+
+
+@pytest.mark.parametrize(
+    ("alias", "model"),
+    [
+        ("gpt-5.6", "gpt-5.6-sol"),
+        ("gpt-daybreak-blue-latest", "gpt-5.6-sol"),
+        ("gpt-daybreak-red-latest", "gpt-5.6-cyber"),
+    ],
+)
+def test_codex_alias_costs_the_same_as_its_model(alias: str, model: str) -> None:
+    assert codex.MODEL_RATES[alias] == codex.MODEL_RATES[model]
 
 
 @pytest.mark.parametrize(
