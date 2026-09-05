@@ -362,3 +362,44 @@ def test_show_node_reads_the_stopped_node_of_a_failed_run(
     output = capsys.readouterr().out
     assert "\n── stderr ──\nboom\n" in output
     assert "\n── outcome ──\nfailure: node 'plan': " in output
+
+
+def test_resume_after_an_interruption_starts_the_next_node_run(project: Path) -> None:
+    interrupt = "\"sh -c 'echo first; kill -INT $PPID; sleep 5'\""
+    write_workflow(project, "self", MINIMAL_WORKFLOW.replace('"true"', interrupt))
+    assert main(["run", "self", "input"]) == 130
+    write_workflow(project, "self", MINIMAL_WORKFLOW.replace('"true"', '"echo second"'))
+    assert main(["resume"]) == 0
+    start_events = [event for event in read_journal_events() if event["event"] == "start"]
+    assert [event["node"] for event in start_events] == ["check#1", "check#2"]
+    assert read_output("check#1", "stdout") == "first\n"
+    assert read_output("check#2", "stdout") == "second\n"
+    assert read_project_state()["visits"] == {"check": 1}
+
+
+FAN_WORKFLOW = """
+start = "checks"
+
+[nodes.checks]
+map = ["lint"]
+resolve = "all"
+
+[nodes.checks.transitions]
+pass = "END"
+fail = "END"
+
+[nodes.lint]
+command = "true"
+"""
+
+
+def test_resume_after_an_interruption_in_a_fan_out_starts_the_next_node_runs(
+    project: Path,
+) -> None:
+    interrupt = "\"sh -c 'kill -INT $PPID; sleep 0.3'\""
+    write_workflow(project, "fan", FAN_WORKFLOW.replace('"true"', interrupt))
+    assert main(["run", "fan", "input"]) == 130
+    write_workflow(project, "fan", FAN_WORKFLOW)
+    assert main(["resume"]) == 0
+    start_events = [event for event in read_journal_events() if event["event"] == "start"]
+    assert [event["node"] for event in start_events] == ["checks#1", "lint#1", "checks#2", "lint#2"]

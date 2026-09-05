@@ -256,7 +256,7 @@ def test_a_second_run_in_the_same_directory_is_rejected(
     assert LOCK_FILE.exists()
 
 
-def test_state_is_written_after_each_node_run(project: Path) -> None:
+def test_state_is_written_before_each_node_run(project: Path) -> None:
     write_workflow(project, "chain", CHAIN_WORKFLOW)
     assert main(["run", "chain", "input"]) == 0
     snapshot = json.loads((project / "snapshot.json").read_text())
@@ -264,8 +264,8 @@ def test_state_is_written_after_each_node_run(project: Path) -> None:
         "workflow": "chain",
         "input": "input",
         "node": "second",
-        "visits": {"first": 1},
-        "node_runs": {"first": 1},
+        "visits": {"first": 1, "second": 1},
+        "node_runs": {"first": 1, "second": 1},
         "spent_time": NEAR_ZERO_SECONDS,
         "spent_cost": 0,
     }

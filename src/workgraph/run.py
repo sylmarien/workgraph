@@ -60,7 +60,7 @@ def run_workflow(
     """Run the workflow from its start node until END or a stop.
 
     Runs the nodes in directory. Writes the run record under RUN_DIR:
-    - STATE_FILE at the start and after each node run
+    - STATE_FILE before and after each node run
     - JOURNAL_FILE as events happen
     - one output file per stream per node run
     A run wipes the previous run record. Prints one progress line per node run
@@ -247,6 +247,8 @@ def resume_run(
                 json.dumps({"received": received_text, "feedback": feedback}),
             ]
         state["node"] = workflow["nodes"][current_node]["transitions"][decision]
+    # The resume drops the stop it resumes from.
+    state.update(stopped=None, reason=None)
     with _lock(directory):
         _append_journal_event(directory, "resume", **resume_event)
         _run_nodes(workflow, state, directory, grace_entry=True, stop_node=current_node)
@@ -310,7 +312,6 @@ def _run_nodes(
     state.setdefault("spent_time", 0.0)
     state.setdefault("spent_cost", 0.0)
     state.setdefault("node_runs", {})
-    _write_state(state, directory, current_node, handoff)
     diverted_nodes: set[str] = set()
     while current_node != END:
         node_definition = nodes[current_node]
@@ -368,7 +369,7 @@ def _run_nodes(
         else:
             visits[current_node] = visits.get(current_node, 0) + 1
         hard_time_limit = time_limits.get("hard")
-        node_run_name = _name_next_node_run(state, current_node)
+        node_run_name = _name_next_node_run(state, directory, current_node)
         _start_node_run(directory, node_run_name, node_definition, handoff)
         started_monotonic = time.monotonic()
         try:
@@ -478,10 +479,15 @@ def _append_journal_event(directory: Path, event_kind: str, **fields: Any) -> No
         journal_file.write(line)
 
 
-def _name_next_node_run(state: dict[str, Any], node_name: str) -> str:
-    """Count one more node run of the node and name it: <node>#<n>, n from 1 and never reset."""
+def _name_next_node_run(state: dict[str, Any], directory: Path, node_name: str) -> str:
+    """Count one more node run of the node and name it: <node>#<n>, n from 1 and never reset.
+
+    The state is saved before the name is used, so a resume after an interruption
+    names a new node run.
+    """
     node_run_counts = state["node_runs"]
     node_run_counts[node_name] = node_run_counts.get(node_name, 0) + 1
+    _save_state(state, directory)
     return f"{node_name}#{node_run_counts[node_name]}"
 
 
@@ -651,7 +657,8 @@ def _run_map(
 
     fanned_out_nodes = node_definition["map"]
     fanned_out_runs = [
-        _name_next_node_run(state, fanned_out_node) for fanned_out_node in fanned_out_nodes
+        _name_next_node_run(state, directory, fanned_out_node)
+        for fanned_out_node in fanned_out_nodes
     ]
     with ThreadPoolExecutor(max_workers=len(fanned_out_nodes)) as pool:
         fanned_out_results = list(pool.map(run_fanned_out, fanned_out_nodes, fanned_out_runs))
@@ -773,5 +780,10 @@ def _write_state(
         stopped=stop_reason,
         reason=error_message,
     )
+    _save_state(state, directory)
+
+
+def _save_state(state: dict[str, Any], directory: Path) -> None:
+    """Write the state to STATE_FILE; None-valued keys are dropped."""
     written_state = {key: value for key, value in state.items() if value is not None}
     (directory / STATE_FILE).write_text(json.dumps(written_state))
