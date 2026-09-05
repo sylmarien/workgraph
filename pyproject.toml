@@ -1,6 +1,6 @@
 [project]
 name = "workgraph"
-version = "0.2.6"
+version = "0.2.7"
 description = "Graph workflow orchestrator."
 readme = "README.md"
 requires-python = ">=3.12"

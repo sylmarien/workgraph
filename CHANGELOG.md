@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.2.7 (2026-09-05)
+
+### Patch
+
+- Persist the state before a node run starts
+  ([`f6b2162`](https://github.com/sylmarien/workgraph/commit/f6b2162651e14f64d909f2074d1f50effdf28ecc))
+
+
 ## v0.2.6 (2026-09-05)
 
 ### Patch
