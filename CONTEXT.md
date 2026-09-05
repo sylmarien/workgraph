@@ -43,6 +43,10 @@ _Avoid_: Artifact, payload
 Free text a human attaches to a `reject`. The gate node delivers it as its handoff.
 _Avoid_: Comment, note
 
+**Agent brief**:
+The design of a change: the issue body or issue comment under the heading `## Agent Brief` that states the change's category, summary, current behavior, desired behavior, key interfaces, acceptance criteria, and out-of-scope items. The `design` node finds, writes, or revises it; the `plan` node plans from it.
+_Avoid_: Design doc, spec, PRD
+
 **Agent definition**:
 The specification of the agent an agent node runs, written in the harness's native format and shared across workflows.
 _Avoid_: Agent spec, agent config

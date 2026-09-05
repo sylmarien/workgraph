@@ -10,7 +10,10 @@ This repository runs its own workflow, `.workgraph/workflows/dev.toml`:
 
 ```mermaid
 flowchart TD
-    plan([plan])
+    design([design])
+    design -->|done| approve-design
+    approve-design -->|accept| plan
+    approve-design -->|reject| design
     plan -->|done| approve-plan
     approve-plan -->|accept| implement
     approve-plan -->|reject| plan
@@ -81,6 +84,19 @@ workgraph run dev "#12"
 ```
 
 ```
+design: done
+approve-design: parked
+parked at approve-design: Plan from this design? · spent 1m20s · $0.15
+Review material from design:
+https://github.com/sylmarien/workgraph/issues/12#issuecomment-5550441682
+```
+
+```sh
+workgraph resume --decision accept
+```
+
+```
+approve-design: accept
 plan: done
 approve-plan: parked
 parked at approve-plan: Implement this plan? · spent 4m05s · $0.42

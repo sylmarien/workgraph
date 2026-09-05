@@ -36,8 +36,21 @@ passed verbatim as one argument.
      `handoff` sections of the node of the last progress line; offer to run
      `workgraph resume` with the same `--directory`.
    - 4 (park): the gate question and the review material, then ask the
-     user for a decision. The user may discuss the review material over
-     several turns; never decide in their place. On accept, run
+     user for a decision. When the review material is one line holding a
+     GitHub issue link (`https://github.com/<owner>/<repo>/issues/<number>`)
+     or issue comment link (the same with `#issuecomment-<id>`), it points at
+     an agent brief. Read the linked text with
+     `gh api repos/<owner>/<repo>/issues/<number> --jq .body` for an issue
+     link, and `gh api repos/<owner>/<repo>/issues/comments/<id> --jq .body`
+     for a comment link. Print the link, then a summary of the brief:
+
+     - its `Summary` line;
+     - its `Desired behavior` in two or three sentences;
+     - the number of `Acceptance criteria` items;
+     - every `Out of scope` item.
+
+     The user may discuss the review material over several turns; never
+     decide in their place. On accept, run
      `workgraph resume --decision accept`. On reject, draft the feedback
      from the changes the user asked for, show the draft, and wait for the
      user's confirmation before running
