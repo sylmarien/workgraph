@@ -62,6 +62,14 @@ _Avoid_: Execution, instance, job
 One entry of a node by a run, from its start to its outcome or failure. Named `<node>#<n>`, where `n` counts the node's node runs in the run, starting at 1 and never reset.
 _Avoid_: Visit, execution, attempt
 
+**Agent session**:
+The harness conversation an agent node run creates or resumes, identified by the harness. Re-entry of a node resumes the node's latest agent session; a resumed node run receives the handoff as its message.
+_Avoid_: Thread, conversation, context
+
+**Fallback**:
+A node run's fresh agent session after its attempt to resume one failed. The node run, the visit, and the entry stay one; the run record keeps the resume attempt's output apart.
+_Avoid_: Retry, second attempt
+
 **Run record**:
 The files a run leaves under `.workgraph/run/`: the state, the journal, and every node run output. `run` wipes the previous run record; `resume` appends to it.
 _Avoid_: Logs, artifacts, history
