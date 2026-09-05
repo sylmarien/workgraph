@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.2.4 (2026-09-05)
+
+### Patch
+
+- Package workgraph as a Codex plugin
+  ([`0b47edd`](https://github.com/sylmarien/workgraph/commit/0b47eddb3cd9e10e6b37a6a7d556c2b268baf48c))
+
+
 ## v0.2.3 (2026-09-04)
 
 ### Patch
