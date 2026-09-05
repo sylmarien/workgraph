@@ -53,6 +53,40 @@ accept = "build"             # both decisions need a transition
 reject = "implement"
 ```
 
+## Harness settings
+
+An agent node can declare these settings or inherit them from `[defaults]`:
+
+| Setting | Harness | Argument | When unset |
+| --- | --- | --- | --- |
+| `allowed_tools` | Claude | `--allowedTools <string>` | No flag |
+| `sandbox` | Codex | `--sandbox <string>` | `--sandbox workspace-write` |
+| `web_search` | Codex | `-c tools.web_search=<TOML value>` | No override |
+
+The node's value overrides `[defaults]`. The agent definition's `tools`
+overrides `allowed_tools`. workgraph passes strings unchanged and serializes
+`web_search` as TOML. The harness validates the values.
+
+A node can declare only settings owned by its resolved harness. A setting
+in `[defaults]` applies only to nodes of its owning harness. A workflow can
+therefore set `allowed_tools` and `sandbox` together in `[defaults]` for
+Claude and Codex nodes. Command, map, and gate nodes cannot declare harness
+settings.
+
+```toml
+[defaults]
+harness = "codex"
+model = "gpt-5.6-sol"
+effort = "high"
+sandbox = "read-only"
+web_search = false
+```
+
+Without `allowed_tools` or definition `tools`, Claude's permission settings
+apply. Under `--permission-mode dontAsk`, Claude denies a tool those
+settings do not pre-approve. Without `web_search`, Codex applies its own
+configuration.
+
 ## Time budget
 
 A workflow may bound the wall-clock time a run spends in node runs:

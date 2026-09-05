@@ -12,6 +12,7 @@ END = "END"
 LIMIT = "LIMIT"
 RESERVED_NAMES = frozenset({END, LIMIT})
 AGENT_SETTINGS = ("harness", "model", "effort")
+HARNESS_SETTINGS = {"allowed_tools": "claude", "sandbox": "codex", "web_search": "codex"}
 NODE_KINDS = ("agent", "command", "map", "gate")
 TIME_KEYS = ("time_soft", "time_hard")
 BUDGET_KEYS = (*TIME_KEYS, "cost")
@@ -76,7 +77,13 @@ def resolve_agent_settings(
     node_definition: dict[str, Any], defaults: dict[str, Any]
 ) -> dict[str, Any]:
     """Return the agent settings of a node: its own value, else the default."""
-    return {key: node_definition.get(key, defaults.get(key)) for key in AGENT_SETTINGS}
+    settings = {key: node_definition.get(key, defaults.get(key)) for key in AGENT_SETTINGS}
+    settings.update(
+        (key, node_definition.get(key, defaults.get(key)))
+        for key, owner in HARNESS_SETTINGS.items()
+        if owner == settings["harness"] and (key in node_definition or key in defaults)
+    )
+    return settings
 
 
 def render_mermaid(workflow: dict[str, Any]) -> str:
@@ -187,7 +194,7 @@ def _validate_node(
         kind = next(kind for kind in NODE_KINDS if kind in node_definition)
         if "outcomes" in node_definition:
             fail(f"a {kind} node cannot declare 'outcomes'")
-        for setting in AGENT_SETTINGS:
+        for setting in (*AGENT_SETTINGS, *HARNESS_SETTINGS):
             if setting in node_definition:
                 fail(f"a {kind} node cannot declare '{setting}'")
         if kind == "map":
@@ -209,13 +216,16 @@ def _validate_node(
             if outcome in RESERVED_NAMES:
                 fail(f"'{outcome}' is reserved and cannot name an outcome")
         settings = resolve_agent_settings(node_definition, defaults)
-        for setting, value in settings.items():
-            if value is None:
+        for setting in AGENT_SETTINGS:
+            if settings[setting] is None:
                 fail(f"'{setting}' is set neither on the node nor in [defaults]")
         harness = settings["harness"]
         if harness not in HARNESS_NAMES:
             accepted = ", ".join(repr(name) for name in HARNESS_NAMES)
             fail(f"harness '{harness}' is not supported; accepted: {accepted}")
+        for setting, owner in HARNESS_SETTINGS.items():
+            if setting in node_definition and harness != owner:
+                fail(f"'{setting}' belongs to harness '{owner}', but the node uses '{harness}'")
     if node_name in fanned_out_by:
         for field in ("transitions", "limits"):
             if field in node_definition:

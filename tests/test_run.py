@@ -418,6 +418,39 @@ def test_spawn_flags_follow_the_decisions(
     assert "sonnet" not in " ".join(argv)
 
 
+@pytest.mark.parametrize("allowed_tools", ["Read, BogusTool", "", "Bash(echo *)"])
+@pytest.mark.parametrize("on_node", [False, True])
+@pytest.mark.parametrize("definition_tools", [None, "Read, Grep", ""])
+def test_claude_allowed_tools_resolve_with_definition_precedence(
+    project: Path,
+    fake_claude: None,
+    allowed_tools: str,
+    on_node: bool,
+    definition_tools: str | None,
+) -> None:
+    workflow_toml = AGENT_WORKFLOW.replace(
+        "[defaults]", f"[defaults]\nallowed_tools = {json.dumps(allowed_tools)}"
+    )
+    if on_node:
+        workflow_toml = workflow_toml.replace(
+            f"allowed_tools = {json.dumps(allowed_tools)}", 'allowed_tools = "default"'
+        ).replace(
+            'agent = "planner"', f'agent = "planner"\nallowed_tools = {json.dumps(allowed_tools)}'
+        )
+    definition = "You are the planner."
+    if definition_tools is not None:
+        definition = f"---\ntools: {definition_tools}\n---\n{definition}"
+    write_workflow(project, "agents", workflow_toml)
+    write_agent(project, "planner", definition)
+    queue_responses(project, build_outcome_response("done"))
+    assert main(["run", "agents", "input"]) == 0
+    [argv] = read_spawn_argv(project)
+    assert argv.count("--allowedTools") == 1
+    assert find_flag_value(argv, "--allowedTools") == (
+        allowed_tools if definition_tools is None else definition_tools
+    )
+
+
 @pytest.mark.parametrize(
     ("response", "message"),
     [
@@ -2110,6 +2143,96 @@ def test_codex_argv_carries_the_definition_model_effort_and_schema(
     assert schema["required"] == ["outcome", "handoff"]
     assert schema["additionalProperties"] is False
     assert not Path(find_flag_value(argv, "--output-schema")).exists()
+
+
+@pytest.mark.parametrize("sandbox", ["read-only", "", "future-sandbox"])
+@pytest.mark.parametrize("on_node", [False, True])
+def test_codex_sandbox_passes_through(
+    project: Path, fake_codex: None, sandbox: str, on_node: bool
+) -> None:
+    workflow_toml = select_codex_harness(AGENT_WORKFLOW).replace(
+        "[defaults]", f"[defaults]\nsandbox = {json.dumps(sandbox)}"
+    )
+    if on_node:
+        workflow_toml = workflow_toml.replace(
+            f"sandbox = {json.dumps(sandbox)}", 'sandbox = "default"'
+        ).replace('agent = "planner"', f'agent = "planner"\nsandbox = {json.dumps(sandbox)}')
+    write_workflow(project, "agents", workflow_toml)
+    write_agent(project, "planner", PLANNER_AGENT)
+    queue_responses(project, build_codex_response("done"))
+    assert main(["run", "agents", "input"]) == 0
+    [argv] = read_spawn_argv(project, "codex")
+    assert argv.count("--sandbox") == 1
+    assert find_flag_value(argv, "--sandbox") == sandbox
+
+
+@pytest.mark.parametrize("on_node", [False, True])
+@pytest.mark.parametrize(
+    "web_search_toml",
+    [
+        "false",
+        "true",
+        '"future mode 😀"',
+        '""',
+        '"false"',
+        "42",
+        "1.25",
+        "inf",
+        "2026-09-05",
+        "12:34:56",
+        "2026-09-05T12:34:56Z",
+        '[false, "cached"]',
+        '{mode = "future", options = {enabled = false}}',
+        '[{mode = "future"}]',
+    ],
+)
+def test_codex_web_search_preserves_toml_values(
+    project: Path, fake_codex: None, on_node: bool, web_search_toml: str
+) -> None:
+    workflow_toml = select_codex_harness(AGENT_WORKFLOW).replace(
+        "[defaults]", f"[defaults]\nweb_search = {web_search_toml}"
+    )
+    if on_node:
+        workflow_toml = workflow_toml.replace(
+            f"web_search = {web_search_toml}", 'web_search = "default"'
+        ).replace('agent = "planner"', f'agent = "planner"\nweb_search = {web_search_toml}')
+    write_workflow(project, "agents", workflow_toml)
+    write_agent(project, "planner", PLANNER_AGENT)
+    queue_responses(project, build_codex_response("done"))
+    assert main(["run", "agents", "--", "-input"]) == 0
+    [argv] = read_spawn_argv(project, "codex")
+    [override] = [
+        argv[index + 1]
+        for index, argument in enumerate(argv)
+        if argument == "-c" and argv[index + 1].startswith("tools.web_search=")
+    ]
+    assert (
+        tomllib.loads(override)["tools"]["web_search"]
+        == tomllib.loads(f"value = {web_search_toml}")["value"]
+    )
+    assert argv[-2:] == ["--", "-input"]
+
+
+def test_mixed_harness_defaults_apply_only_to_the_owning_harness(
+    project: Path, fake_claude: None, fake_codex: None
+) -> None:
+    workflow_toml = COST_WORKFLOW.replace(
+        "[defaults]",
+        '[defaults]\nallowed_tools = "Read"\nsandbox = "read-only"\nweb_search = false',
+    ).replace('agent = "builder"', 'agent = "builder"\nharness = "codex"')
+    write_workflow(project, "mixed", workflow_toml)
+    for agent_name in ("planner", "builder"):
+        write_agent(project, agent_name, "Complete the work.")
+    queue_responses(project, build_outcome_response("done"), build_codex_response("done"))
+    assert main(["run", "mixed", "input"]) == 0
+    [claude_argv] = read_spawn_argv(project)
+    [codex_argv] = read_spawn_argv(project, "codex")
+    assert find_flag_value(claude_argv, "--allowedTools") == "Read"
+    assert "--sandbox" not in claude_argv
+    assert "-c" not in claude_argv
+    assert find_flag_value(codex_argv, "--sandbox") == "read-only"
+    assert "tools.web_search=false" in codex_argv
+    assert "--allowedTools" not in codex_argv
 
 
 def build_codex_usage(**usage: object) -> str:

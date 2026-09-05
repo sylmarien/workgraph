@@ -707,6 +707,9 @@ def _run_agent(
         model=settings["model"],
         effort=settings["effort"],
         outcomes=node_definition["outcomes"],
+        allowed_tools=settings.get("allowed_tools"),
+        sandbox=settings.get("sandbox", "workspace-write"),
+        web_search=settings.get("web_search"),
     )
     with harness.build_argv(invocation) as argv:
         completed_process = _spawn(node_run_name, argv, directory, hard_time_limit, spent_time)

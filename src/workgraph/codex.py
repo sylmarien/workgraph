@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+import tomlkit
 from rich.text import Text
 
 from workgraph.harness import AgentInvocation, NodeFailure, iter_jsonl_events, split_lines
@@ -61,14 +62,14 @@ def build_argv(invocation: AgentInvocation) -> Iterator[list[str]]:
     with tempfile.NamedTemporaryFile("w", suffix=".json") as schema_file:
         schema_file.write(json.dumps(_build_strict_schema(invocation.outcome_schema)))
         schema_file.flush()
-        yield [
+        argv = [
             "codex",
             "exec",
             "--json",
             # The target directory of a run is any directory; codex exec refuses a non-git one.
             "--skip-git-repo-check",
             "--sandbox",
-            "workspace-write",
+            invocation.sandbox,
             "--model",
             invocation.model,
             # A `-c` value parses as TOML; a JSON string with raw non-ASCII characters is a TOML
@@ -80,10 +81,13 @@ def build_argv(invocation: AgentInvocation) -> Iterator[list[str]]:
             f"{json.dumps(invocation.agent_definition['prompt'], ensure_ascii=False)}",
             "--output-schema",
             schema_file.name,
-            # The prompt is any text; `--` keeps one starting with a hyphen out of the options.
-            "--",
-            invocation.prompt,
         ]
+        if invocation.web_search is not None:
+            web_search = tomlkit.inline_table()
+            web_search["value"] = invocation.web_search
+            argv += ["-c", f"tools.web_search={tomlkit.item(web_search['value']).as_string()}"]
+        # The prompt is any text; `--` keeps one starting with a hyphen out of the options.
+        yield [*argv, "--", invocation.prompt]
 
 
 def _read_auth_mode() -> str:

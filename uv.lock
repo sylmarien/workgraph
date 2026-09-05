@@ -1004,10 +1004,11 @@ wheels = [
 
 [[package]]
 name = "workgraph"
-version = "0.2.2"
+version = "0.2.5"
 source = { editable = "." }
 dependencies = [
     { name = "termaid", extra = ["rich"] },
+    { name = "tomlkit" },
 ]
 
 [package.dev-dependencies]
@@ -1020,7 +1021,10 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "termaid", extras = ["rich"], specifier = ">=0.8.0" }]
+requires-dist = [
+    { name = "termaid", extras = ["rich"], specifier = ">=0.8.0" },
+    { name = "tomlkit", specifier = ">=0.15.1" },
+]
 
 [package.metadata.requires-dev]
 dev = [

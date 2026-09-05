@@ -17,10 +17,14 @@ The run input names a GitHub issue. Read it, implement it, write tests.
 - The body is the agent's prompt. Claude receives it as the subagent prompt
   through `--agents`; Codex receives it as `developer_instructions`. The run
   input, plus any handoff, arrives as the user message.
-- `tools` becomes Claude's `--allowedTools`. Claude agents run with
-  `--permission-mode dontAsk`, so a tool outside the list is denied, not
-  prompted for. Codex ignores `tools` and runs with
-  `--sandbox workspace-write`.
+- `tools` becomes Claude's `--allowedTools` and overrides the workflow's
+  `allowed_tools`. Without either setting, workgraph passes no
+  `--allowedTools`. Claude agents run with `--permission-mode dontAsk`;
+  Claude denies tools its permission settings do not pre-approve.
+- Codex takes its restrictions from the workflow's `sandbox` and
+  `web_search` harness settings. Without `sandbox`, workgraph passes
+  `--sandbox workspace-write`. Without `web_search`, Codex applies its
+  own web search configuration.
 - The workflow's `model` and `effort` always apply; frontmatter never
   overrides them. They map to Claude's `--model` and `--effort`, and to
   Codex's `--model` and `model_reasoning_effort`.
