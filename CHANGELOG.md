@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.2.5 (2026-09-05)
+
+### Patch
+
+- Define harness setting in the glossary
+  ([`a950467`](https://github.com/sylmarien/workgraph/commit/a95046787ebc71ea105af72437bb0101eb19f6c7))
+
+
 ## v0.2.4 (2026-09-05)
 
 ### Patch
