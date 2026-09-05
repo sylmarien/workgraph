@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.2.9 (2026-09-05)
+
+### Patch
+
+- Start the dev workflow at a design node that owns the agent brief
+  ([`51f6f31`](https://github.com/sylmarien/workgraph/commit/51f6f31beef21a7f88b7251a360ba6076b715da3))
+
+
 ## v0.2.8 (2026-09-05)
 
 ### Patch
