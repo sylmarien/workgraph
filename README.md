@@ -43,6 +43,27 @@ the setup: it checks that `claude` and `uv` are on `PATH`, installs the CLI
 with `uv`, and places the bundled files under `~/.workgraph/`. It installs
 neither `claude` nor `uv`.
 
+As a Codex plugin:
+
+```sh
+codex plugin marketplace add sylmarien/workgraph
+codex plugin add workgraph@workgraph
+```
+
+Start a new Codex session and invoke `$workgraph dev "#<issue>"`.
+The plugin shares the install and run skills, bundled workflow, and agent
+definitions with the Claude Code plugin. The `dev` workflow defaults to
+the Claude harness, so it requires `claude` and `uv` on `PATH` in Codex too.
+The install skill places the definitions under `~/.workgraph/` and asks
+before replacing files whose contents differ.
+
+Codex reads the repository's existing marketplace at
+`.claude-plugin/marketplace.json` and its manifest at
+`.codex-plugin/plugin.json`. Both plugins ship in the same Git release.
+The patch, minor, and major release workflows update both manifests and
+the CLI to the same version. See the
+[Codex packaging documentation](https://developers.openai.com/plugins/build/plugins).
+
 Without the plugin:
 
 ```sh

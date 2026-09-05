@@ -2,7 +2,8 @@
 name: workgraph
 description: >
   Start and follow a workgraph run. Use when the user invokes
-  /workgraph <workflow> [directory] <input...>.
+  /workgraph in Claude Code or $workgraph in Codex with a workflow name,
+  an optional directory, and run input.
 ---
 If `workgraph` is not on `PATH`, run the plugin's `install` skill first.
 
@@ -13,6 +14,8 @@ passed verbatim as one argument.
 1. Launch the run in the background:
    `workgraph run <workflow> "<input>"`, with
    `--directory <directory>` before `run` when a directory was given.
+   In Codex, keep the shell tool's session ID and poll it for output and
+   the exit code until the process stops.
    Never cd: `--directory` keeps workflow and agent file resolution in the
    session's directory while the run executes in the target.
 2. Print `Follow from another terminal: workgraph --directory <directory>
