@@ -1,7 +1,7 @@
 {
   "name": "workgraph",
   "description": "Run development workflows declared as graphs from a Codex session.",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "author": { "name": "sylmarien" },
   "skills": "./skills/",
   "interface": {

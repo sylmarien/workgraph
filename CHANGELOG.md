@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.2.6 (2026-09-05)
+
+### Patch
+
+- Add per-harness settings to agent nodes
+  ([`3c2413a`](https://github.com/sylmarien/workgraph/commit/3c2413a0debbd693dfb528407d26c6856303e871))
+
+
 ## v0.2.5 (2026-09-05)
 
 ### Patch
