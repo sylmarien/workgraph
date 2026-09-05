@@ -1,12 +1,15 @@
 """Tests for workflow discovery, loading, and validation."""
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from tests.conftest import AGENT_WORKFLOW, MINIMAL_WORKFLOW, write_workflow
 from workgraph.harness import HARNESS_NAMES
 from workgraph.workflow import WorkflowError, load_workflow, parse_duration, render_mermaid
+
+REPOSITORY_ROOT = Path(__file__).parent.parent
 
 VALID_WORKFLOW = """
 start = "implement"
@@ -258,21 +261,26 @@ def test_unknown_workflow_is_an_error(project: Path) -> None:
         load_workflow("ghost")
 
 
+@pytest.fixture
+def bundled_dev_workflow(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Load the `dev` workflow this repository ships in `.workgraph`."""
+    monkeypatch.chdir(REPOSITORY_ROOT)
+    return load_workflow("dev")
+
+
 def test_bundled_dev_workflow_declares_the_review_fan_out(
-    monkeypatch: pytest.MonkeyPatch,
+    bundled_dev_workflow: dict[str, Any],
 ) -> None:
-    monkeypatch.chdir(Path(__file__).parent.parent)
-    workflow = load_workflow("dev")
-    assert workflow["defaults"] == {
+    assert bundled_dev_workflow["defaults"] == {
         "harness": "claude",
         "model": "claude-fable-5-1",
         "effort": "high",
     }
-    review = workflow["nodes"]["review"]
+    review = bundled_dev_workflow["nodes"]["review"]
     assert review["map"] == ["code-review", "overengineering-review"]
     assert review["resolve"] == "all"
     assert review["transitions"] == {"pass": "pr", "fail": "review-loop"}
-    review_loop = workflow["nodes"]["review-loop"]
+    review_loop = bundled_dev_workflow["nodes"]["review-loop"]
     assert review_loop["command"] == "true"
     assert review_loop["limits"] == {"visits": 2}
     assert review_loop["transitions"] == {
@@ -280,7 +288,30 @@ def test_bundled_dev_workflow_declares_the_review_fan_out(
         "fail": "implement",
         "LIMIT": "summary",
     }
-    assert workflow["nodes"]["test"]["limits"] == {"visits": 5, "reset": "pass"}
+    assert bundled_dev_workflow["nodes"]["test"]["limits"] == {"visits": 5, "reset": "pass"}
+
+
+def test_bundled_dev_workflow_starts_at_the_design_node(
+    bundled_dev_workflow: dict[str, Any],
+) -> None:
+    assert bundled_dev_workflow["start"] == "design"
+    design = bundled_dev_workflow["nodes"]["design"]
+    assert design["agent"] == "design"
+    assert design["effort"] == "xhigh"
+    assert design["outcomes"] == ["done"]
+    assert design["transitions"] == {"done": "approve-design"}
+    approve_design = bundled_dev_workflow["nodes"]["approve-design"]
+    assert approve_design["gate"] == "Plan from this design?"
+    assert approve_design["transitions"] == {"accept": "plan", "reject": "design"}
+
+
+def test_bundled_dev_agents_have_definitions(
+    bundled_dev_workflow: dict[str, Any],
+) -> None:
+    agents_directory = REPOSITORY_ROOT / ".workgraph" / "agents"
+    for node in bundled_dev_workflow["nodes"].values():
+        if "agent" in node:
+            assert (agents_directory / f"{node['agent']}.md").is_file()
 
 
 BUDGETED_WORKFLOW = (

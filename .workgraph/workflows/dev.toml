@@ -1,9 +1,24 @@
-start = "plan"
+start = "design"
 
 [defaults]
 harness = "claude"
 model = "claude-fable-5-1"
 effort = "high"
+
+[nodes.design]
+agent = "design"
+effort = "xhigh"
+outcomes = ["done"]
+
+[nodes.design.transitions]
+done = "approve-design"
+
+[nodes.approve-design]
+gate = "Plan from this design?"
+
+[nodes.approve-design.transitions]
+accept = "plan"
+reject = "design"
 
 [nodes.plan]
 agent = "plan"

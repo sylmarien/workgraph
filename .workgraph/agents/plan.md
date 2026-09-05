@@ -8,11 +8,17 @@ The run input names a GitHub issue in this repository. Read it with
 owner and repo from `git remote -v` and read
 `https://api.github.com/repos/<owner>/<repo>/issues/<number>` with `curl`.
 
+The handoff on entry from `approve-design` carries the link of the issue's
+agent brief, or the brief itself when the run input names no issue. The brief
+is the body or the comment at the link, under the heading `## Agent Brief`.
+The plan follows the brief: its tasks implement the brief's desired behavior
+and stay inside its scope.
+
 Read the code the issue touches, then write the plan. Do not modify the
 repository.
 
-When the prompt carries a handoff, its `feedback` field is the feedback on
-the rejected plan under `received`. Revise the plan to address every point
+On entry from `approve-plan`, the handoff's `feedback` field is the feedback
+on the rejected plan under `received`. Revise the plan to address every point
 of the feedback.
 
 ## Plan shape
@@ -40,9 +46,9 @@ to task N", no reference to a name that no task defines.
 
 ## Self-check
 
-Before reporting, check the plan against the issue:
+Before reporting, check the plan against the brief:
 
-- every requirement of the issue maps to a task;
+- every acceptance criterion of the brief maps to a task;
 - no placeholder remains;
 - a name used in several tasks is the same in all of them.
 
