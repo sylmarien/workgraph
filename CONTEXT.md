@@ -50,6 +50,10 @@ _Avoid_: Agent spec, agent config
 **Harness**:
 The runtime that executes an agent: `claude` (Claude Code) or `codex` (the Codex CLI), selected by the `harness` setting. Claude reports the cost of a node run; Codex reports token usage, from which workgraph estimates the cost.
 
+**Harness setting**:
+An agent setting that one harness owns: `allowed_tools` (Claude), `sandbox` and `web_search` (Codex). A node declares it directly or inherits it from `[defaults]`. A node cannot declare a harness setting of another harness; a `[defaults]` harness setting applies only to nodes of its harness. The agent definition's `tools` overrides `allowed_tools`.
+_Avoid_: Tool setting, permission, capability
+
 **Run**:
 One execution of a workflow, from its start node until `END`, a failure, an escalation, a park, or a budget stop.
 _Avoid_: Execution, instance, job
