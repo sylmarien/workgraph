@@ -32,6 +32,9 @@ class AgentInvocation:
     model: str
     effort: str
     outcomes: list[str]
+    allowed_tools: str | None = None
+    sandbox: str = "workspace-write"
+    web_search: Any = None
 
     @property
     def outcome_schema(self) -> dict[str, Any]:

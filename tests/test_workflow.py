@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.conftest import MINIMAL_WORKFLOW, write_workflow
+from tests.conftest import AGENT_WORKFLOW, MINIMAL_WORKFLOW, write_workflow
 from workgraph.harness import HARNESS_NAMES
 from workgraph.workflow import WorkflowError, load_workflow, parse_duration, render_mermaid
 
@@ -79,6 +79,37 @@ def test_a_node_selects_a_harness_over_the_default(project: Path) -> None:
     assert load_workflow("build")["nodes"]["review"]["harness"] == "codex"
 
 
+@pytest.mark.parametrize(
+    ("setting", "owner", "harness"),
+    [
+        ("allowed_tools", "claude", "codex"),
+        ("sandbox", "codex", "claude"),
+        ("web_search", "codex", "claude"),
+    ],
+)
+@pytest.mark.parametrize("harness_on_node", [False, True])
+def test_agent_rejects_another_harness_setting(
+    project: Path, setting: str, owner: str, harness: str, harness_on_node: bool
+) -> None:
+    workflow_toml = AGENT_WORKFLOW
+    node_settings = f'{setting} = "anything"'
+    if harness_on_node:
+        node_settings += f'\nharness = "{harness}"'
+    else:
+        workflow_toml = workflow_toml.replace('harness = "claude"', f'harness = "{harness}"')
+    write_workflow(
+        project,
+        "agents",
+        workflow_toml.replace('agent = "planner"', f'agent = "planner"\n{node_settings}'),
+    )
+    with pytest.raises(WorkflowError) as error:
+        load_workflow("agents")
+    assert str(error.value) == (
+        f"agents: node 'plan': '{setting}' belongs to harness '{owner}', "
+        f"but the node uses '{harness}'"
+    )
+
+
 MAPPED_WORKFLOW = """
 start = "checks"
 
@@ -142,6 +173,35 @@ flowchart TD
 def test_gate_workflow_renders_a_hexagon(project: Path) -> None:
     write_workflow(project, "gated", GATED_WORKFLOW)
     assert render_mermaid(load_workflow("gated")) == GATED_MERMAID
+
+
+@pytest.mark.parametrize("setting", ["allowed_tools", "sandbox", "web_search"])
+@pytest.mark.parametrize(
+    ("workflow_toml", "node_name", "kind", "declaration"),
+    [
+        (MINIMAL_WORKFLOW, "check", "command", 'command = "true"'),
+        (MAPPED_WORKFLOW, "checks", "map", 'resolve = "all"'),
+        (GATED_WORKFLOW, "approve", "gate", 'gate = "Ship it?"'),
+    ],
+)
+def test_non_agent_rejects_harness_settings(
+    project: Path,
+    setting: str,
+    workflow_toml: str,
+    node_name: str,
+    kind: str,
+    declaration: str,
+) -> None:
+    write_workflow(
+        project,
+        "build",
+        workflow_toml.replace(declaration, f'{declaration}\n{setting} = "anything"'),
+    )
+    with pytest.raises(WorkflowError) as error:
+        load_workflow("build")
+    assert (
+        str(error.value) == f"build: node '{node_name}': a {kind} node cannot declare '{setting}'"
+    )
 
 
 START_NOT_FIRST_WORKFLOW = """

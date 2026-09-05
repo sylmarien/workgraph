@@ -44,8 +44,9 @@ def build_argv(invocation: AgentInvocation) -> Iterator[list[str]]:
         "--effort",
         invocation.effort,
     ]
-    if "tools" in agent_definition:
-        argv += ["--allowedTools", agent_definition["tools"]]
+    allowed_tools = agent_definition.get("tools", invocation.allowed_tools)
+    if allowed_tools is not None:
+        argv += ["--allowedTools", allowed_tools]
     yield argv
 
 
