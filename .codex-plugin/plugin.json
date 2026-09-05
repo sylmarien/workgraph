@@ -1,0 +1,16 @@
+{
+  "name": "workgraph",
+  "description": "Run development workflows declared as graphs from a Codex session.",
+  "version": "0.2.3",
+  "author": { "name": "sylmarien" },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "workgraph",
+    "shortDescription": "Run development workflows declared as graphs.",
+    "longDescription": "Install the workgraph CLI and bundled definitions, start runs, follow progress, and give decisions at gate nodes.",
+    "developerName": "sylmarien",
+    "category": "Developer Tools",
+    "capabilities": ["Read", "Write"],
+    "defaultPrompt": ["Start a workgraph run for a GitHub issue."]
+  }
+}

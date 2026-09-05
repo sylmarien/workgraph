@@ -49,5 +49,5 @@ fail_under = 100
 [tool.semantic_release]
 commit_parser = "release_parser:AlwaysPatchCommitParser"
 version_toml = ["pyproject.toml:project.version"]
-version_variables = [".claude-plugin/plugin.json:version"]
+version_variables = [".claude-plugin/plugin.json:version", ".codex-plugin/plugin.json:version"]
 allow_zero_version = true
