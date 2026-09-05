@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.2.8 (2026-09-05)
+
+### Patch
+
+- Add the Daybreak models and aliases to the Codex price table
+  ([`2436f1b`](https://github.com/sylmarien/workgraph/commit/2436f1bc2cbfd13c44019455cc80a1e756fd8442))
+
+
 ## v0.2.7 (2026-09-05)
 
 ### Patch
