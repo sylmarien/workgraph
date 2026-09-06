@@ -47,6 +47,10 @@ _Avoid_: Comment, note
 The design of a change: the issue body or issue comment under the heading `## Agent Brief` that states the change's category, summary, current behavior, desired behavior, key interfaces, acceptance criteria, and out-of-scope items. The `design` node finds, writes, or revises it; the `plan` node plans from it.
 _Avoid_: Design doc, spec, PRD
 
+**Implementation plan**:
+The ordered tasks that implement an agent brief: the issue comment under the heading `## Implementation Plan` that states the goal, the approach, the files, and the tasks, each with its files, interfaces, tests, and commit summary. The `plan` node finds, writes, or revises it; the `implement` node follows it task by task.
+_Avoid_: Task list, roadmap, work breakdown
+
 **Agent definition**:
 The specification of the agent an agent node runs, written in the harness's native format and shared across workflows.
 _Avoid_: Agent spec, agent config
