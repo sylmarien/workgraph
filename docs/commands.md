@@ -47,6 +47,8 @@
     lines arrive;
   - the end time, duration, and cost lines, then the `outcome` and
     `handoff` sections, at the node run's end.
+
+  After a fallback, the fresh spawn's output follows the resumed spawn's.
 - `workgraph show-journal` — list the events of the run in the current
   directory, one line per event, each starting with the local ISO 8601 time:
   - `run: <workflow> "<input>"`
@@ -54,13 +56,15 @@
   - `<node run>: <outcome> → <target>  <duration>`, then `$<cost>` for an
     agent node run; `<node run>: failure: <message>  <duration>`
   - `<node>: LIMIT → <target>`
+  - `<node run>: FALLBACK → fresh spawn  <error>` when a resumed spawn exits
+    non-zero
   - `<gate>: accept` or `<gate>: reject`, or `resumed`; then `+<time>` and
     `+$<cost>` for the grants
   - the stop line
 
-  A fanned-out node run reads `<map>/<node run>`. A run without a stop ends
-  on an untimestamped line: `running <node run> <elapsed>… · spent <t>`
-  while the run is in progress, `interrupted at <node> · …` otherwise.
+  A fanned-out node run reads `<map>/<node run>`. A run without a stop ends on an untimestamped line:
+  `running <node run> <elapsed>… · spent <t>` while the run is in progress,
+  `interrupted at <node> · …` otherwise.
   `--with-nodes` prints a node run's stdout and stderr before its end line,
   the output of every node run in progress before the untimestamped last
   line, and prefixes every line with its origin:
@@ -86,7 +90,8 @@
   - it ends at `END`.
 
   `--with-nodes --follow` prints the output of every node run in progress
-  as it arrives.
+  as it arrives; after a fallback, the fresh spawn's output follows the
+  fallback line under the same origin as the resumed spawn's.
 
   `--graph` draws the run's path as a vertical chain instead of the event
   lines: a header `run: <workflow> "<input>" · spent <t> · $<c> · <state>`
@@ -123,6 +128,9 @@ resolution from execution:
   - `.workgraph/run/journal.jsonl`: the journal, one JSON event per line.
   - `.workgraph/run/<node>#<n>.stdout` and `.stderr`: the output of every
     command and agent node run, `n` counting the node's node runs from 1.
+  - `.workgraph/run/<node>#<n>.resume.stdout` and `.resume.stderr`: the output
+    of a resumed spawn, present only after a fallback (see
+    [Agent sessions](workflow-files.md#agent-sessions)).
 
   `run` wipes `.workgraph/run/`; `resume` appends to it.
   `.workgraph/run.lock` exists while the run is in progress.
@@ -169,6 +177,7 @@ be resumed. What the resume does depends on the stop:
   follows the matching transition without re-running the gate.
 
 The first entry of every resume is a grace entry: it does not count toward
-the visit limit. A run at or past a limit of a budget resumes only with a
+the visit limit. A grace entry into an agent node resumes the node's latest
+agent session. A run at or past a limit of a budget resumes only with a
 grant (`--add-time`, `--add-cost`); otherwise `resume` refuses (exit 1) and
 changes nothing.

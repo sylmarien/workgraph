@@ -10,7 +10,13 @@ from typing import Any
 import tomlkit
 from rich.text import Text
 
-from workgraph.harness import AgentInvocation, NodeFailure, iter_jsonl_events, split_lines
+from workgraph.harness import (
+    AgentInvocation,
+    NodeFailure,
+    iter_jsonl_events,
+    read_last_value,
+    split_lines,
+)
 
 # USD per million tokens: uncached input, cached input, cache write, output.
 # A Pro model offers no cached input discount, so its cached rate is its input rate.
@@ -56,32 +62,49 @@ def _build_strict_schema(outcome_schema: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _format_toml_string(value: str) -> str:
+    """Format a string as the TOML basic string a `-c` override takes.
+
+    A JSON string with raw non-ASCII characters is a TOML basic string, and ensure_ascii=False
+    avoids the surrogate-pair escapes TOML rejects.
+    """
+    return json.dumps(value, ensure_ascii=False)
+
+
 @contextmanager
 def build_argv(invocation: AgentInvocation) -> Iterator[list[str]]:
     """Yield the argv that runs the agent through the Codex CLI.
 
     The outcome schema lives in a temporary file for the duration of the with block.
     """
+    session = invocation.session
     with tempfile.NamedTemporaryFile("w", suffix=".json") as schema_file:
         schema_file.write(json.dumps(_build_strict_schema(invocation.outcome_schema)))
         schema_file.flush()
+        # A resumed session already holds the developer instructions, and `codex exec resume`
+        # has no --sandbox flag, so the sandbox goes as a configuration override.
+        session_dependent_argv = (
+            [
+                "--sandbox",
+                invocation.sandbox,
+                "-c",
+                f"developer_instructions={_format_toml_string(invocation.agent_definition['prompt'])}",
+            ]
+            if session is None
+            else ["-c", f"sandbox_mode={_format_toml_string(invocation.sandbox)}"]
+        )
         argv = [
             "codex",
             "exec",
+            *([] if session is None else ["resume", session]),
             "--json",
             # The target directory of a run is any directory; codex exec refuses a non-git one.
             "--skip-git-repo-check",
-            "--sandbox",
-            invocation.sandbox,
             "--model",
             invocation.model,
-            # A `-c` value parses as TOML; a JSON string with raw non-ASCII characters is a TOML
-            # basic string, and ensure_ascii=False avoids the surrogate-pair escapes TOML rejects.
             "-c",
-            f"model_reasoning_effort={json.dumps(invocation.effort, ensure_ascii=False)}",
-            "-c",
-            "developer_instructions="
-            f"{json.dumps(invocation.agent_definition['prompt'], ensure_ascii=False)}",
+            f"model_reasoning_effort={_format_toml_string(invocation.effort)}",
+            *session_dependent_argv,
             "--output-schema",
             schema_file.name,
         ]
@@ -163,6 +186,14 @@ def read_result(invocation: AgentInvocation, stdout_lines: Sequence[str]) -> tup
     except json.JSONDecodeError:
         structured_output = None
     return structured_output, _estimate_cost_usd(invocation.model, usage)
+
+
+def read_session(stdout_lines: Sequence[str]) -> str | None:
+    """Return the session the last thread.started event names by its Codex thread id."""
+    thread_events = (
+        event for event in iter_jsonl_events(stdout_lines) if event.get("type") == "thread.started"
+    )
+    return read_last_value(thread_events, "thread_id")
 
 
 def _read_narration(agent_message_text: str) -> str | None:

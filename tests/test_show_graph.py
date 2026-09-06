@@ -13,6 +13,7 @@ from tests.test_follow import AT_CHECKS_2_EVENTS, CHECKS_2_ENDED_EVENTS, append_
 from tests.test_show_journal import (
     ENDED_EVENTS,
     FAILED_EVENTS,
+    FALLBACK_EVENTS,
     IN_PROGRESS_EVENTS,
     LIMITED_EVENTS,
     PARKED_EVENTS,
@@ -289,3 +290,14 @@ def test_graph_follow_on_a_run_that_exits_without_a_stop_is_an_error(
     exit_code, output = run_on_pty(["show-journal", "--graph", "--follow"])
     assert exit_code == 1
     assert capsys.readouterr().err == "the run stopped without a stop event\n"
+
+
+def test_sessions_and_a_fallback_draw_the_same_chain(
+    dev_project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_record(dev_project, PARKED_EVENTS)
+    assert main(["show-journal", "--graph"]) == 0
+    plain_output = capsys.readouterr().out
+    write_record(dev_project, FALLBACK_EVENTS)
+    assert main(["show-journal", "--graph"]) == 0
+    assert capsys.readouterr().out == plain_output

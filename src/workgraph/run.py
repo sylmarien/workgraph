@@ -9,9 +9,10 @@ import time
 from collections.abc import Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from rich.console import Console
 from rich.text import Text
@@ -28,6 +29,20 @@ LOCK_FILE = Path(".workgraph") / "run.lock"
 GREY = "grey66"
 
 _JOURNAL_LOCK = threading.Lock()
+_STATE_LOCK = threading.Lock()
+
+
+@dataclass(frozen=True)
+class NodeRunResult:
+    """What a node run produced: its outcome, its handoff, its USD cost, and its agent session.
+
+    Only an agent node run has a session.
+    """
+
+    outcome: str
+    handoff: str | None
+    cost: float
+    session: str | None = None
 
 
 class RunInProgress(Exception):
@@ -369,12 +384,15 @@ def _run_nodes(
         else:
             visits[current_node] = visits.get(current_node, 0) + 1
         hard_time_limit = time_limits.get("hard")
+        # _take_session runs before _name_next_node_run saves the state, so a node run cut
+        # before its end leaves no session and its re-entry starts fresh.
+        resumed_session = _take_session(state, current_node) if "agent" in node_definition else None
         node_run_name = _name_next_node_run(state, directory, current_node)
-        _start_node_run(directory, node_run_name, node_definition, handoff)
+        _start_node_run(directory, node_run_name, node_definition, handoff, session=resumed_session)
         started_monotonic = time.monotonic()
         try:
             if "agent" in node_definition:
-                outcome, handoff_text, node_cost = _run_agent(
+                result = _run_agent(
                     node_run_name,
                     node_definition,
                     defaults,
@@ -383,9 +401,10 @@ def _run_nodes(
                     directory,
                     hard_time_limit,
                     spent_time,
+                    resumed_session,
                 )
             elif "map" in node_definition:
-                outcome, handoff_text, node_cost = _run_map(
+                result = _run_map(
                     node_run_name,
                     node_definition,
                     state,
@@ -396,7 +415,7 @@ def _run_nodes(
                     spent_time,
                 )
             else:
-                outcome, handoff_text, node_cost = _run_command(
+                result = _run_command(
                     node_run_name, node_definition, directory, hard_time_limit, spent_time
                 )
         except KeyboardInterrupt:
@@ -408,33 +427,40 @@ def _run_nodes(
             state["spent_cost"] += error.cost
             print(f"{current_node}: failure", flush=True)
             _end_node_run(
-                directory, node_run_name, {"failure": str(error)}, None, error.cost, state=state
+                directory,
+                node_run_name,
+                {"failure": str(error)},
+                None,
+                error.cost,
+                error.session,
+                state,
             )
             _stop_run(state, directory, current_node, handoff, "failure", error)
             raise error from None
         state["spent_time"] += time.monotonic() - started_monotonic
-        state["spent_cost"] += node_cost
+        state["spent_cost"] += result.cost
         if "agent" in node_definition:
             # workgraph discards the handoff after delivering it to an agent.
             handoff = None
-        print(f"{current_node}: {outcome}", flush=True)
-        if outcome == node_limits.get("reset"):
+        print(f"{current_node}: {result.outcome}", flush=True)
+        if result.outcome == node_limits.get("reset"):
             visits.pop(current_node, None)
-        target = node_definition["transitions"][outcome]
+        target = node_definition["transitions"][result.outcome]
         _end_node_run(
             directory,
             node_run_name,
-            {"outcome": outcome},
-            handoff_text,
-            node_cost,
+            {"outcome": result.outcome},
+            result.handoff,
+            result.cost,
+            result.session,
+            state,
             target,
-            state=state,
         )
         # A command or map node that reports no handoff forwards the one it received.
         if target == END:
             handoff = None
-        elif handoff_text is not None:
-            handoff = (current_node, handoff_text)
+        elif result.handoff is not None:
+            handoff = (current_node, result.handoff)
         # The state names the node the run enters, so an interrupted run resumes there.
         _write_state(state, directory, target, handoff)
         stop_node = current_node
@@ -501,24 +527,34 @@ def build_output_path(directory: Path, node_run_name: str, stream: str) -> Path:
     return directory / RUN_DIR / f"{node_run_name}.{stream}"
 
 
+def _take_session(state: dict[str, Any], node_name: str) -> str | None:
+    """Pop and return the agent session the node's latest node run ended with."""
+    return cast(str | None, state.get("sessions", {}).pop(node_name, None))
+
+
 def _start_node_run(
     directory: Path,
     node_run_name: str,
     node_definition: dict[str, Any],
     handoff: tuple[str, str] | None,
     map_name: str | None = None,
+    session: str | None = None,
 ) -> None:
     """Create the output files of a command or agent node run, then journal its start.
 
     A fanned-out node run names its map node; the start event carries map only then.
+    It carries session only when the node run resumes one.
     """
     if "map" not in node_definition:
         for stream in ("stdout", "stderr"):
             build_output_path(directory, node_run_name, stream).touch()
-    delivered_handoff = {"source": handoff[0], "text": handoff[1]} if handoff else None
-    map_fields = {} if map_name is None else {"map": map_name}
     _append_journal_event(
-        directory, "start", node=node_run_name, handoff=delivered_handoff, **map_fields
+        directory,
+        "start",
+        node=node_run_name,
+        handoff={"source": handoff[0], "text": handoff[1]} if handoff else None,
+        **({} if map_name is None else {"map": map_name}),
+        **({} if session is None else {"session": session}),
     )
 
 
@@ -528,16 +564,23 @@ def _end_node_run(
     end_fields: dict[str, Any],
     handoff: str | None,
     cost: float,
+    session: str | None,
+    state: dict[str, Any],
     target: str | None = None,
     map_name: str | None = None,
-    state: dict[str, Any] | None = None,
 ) -> None:
-    """Journal the end of a node run; with state, include spent_time and spent_cost.
+    """Store the session the node run ended with, then journal its end.
 
-    end_fields holds the one key the event ends with: outcome or failure.
+    end_fields holds the one key the event ends with: outcome or failure. A fanned-out end
+    carries no spent amounts, and the event carries session only when the node run has one.
     """
+    if session is not None:
+        # A fan-out ends its node runs from several threads.
+        with _STATE_LOCK:
+            state.setdefault("sessions", {})[parse_node_name(node_run_name)] = session
+            _save_state(state, directory)
     spent_amounts = (
-        {} if state is None else {key: state[key] for key in ("spent_time", "spent_cost")}
+        {} if map_name is not None else {key: state[key] for key in ("spent_time", "spent_cost")}
     )
     _append_journal_event(
         directory,
@@ -548,6 +591,7 @@ def _end_node_run(
         target=target,
         map=map_name,
         cost=cost,
+        **({} if session is None else {"session": session}),
         **spent_amounts,
     )
 
@@ -595,12 +639,12 @@ def _run_command(
     directory: Path,
     hard_time_limit: float | None,
     spent_time: float,
-) -> tuple[str, None, float]:
+) -> NodeRunResult:
     """Run the command; a command node reports no handoff and no cost."""
     completed_process = _spawn(
         node_run_name, node_definition["command"], directory, hard_time_limit, spent_time
     )
-    return ("pass" if completed_process.returncode == 0 else "fail"), None, 0.0
+    return NodeRunResult("pass" if completed_process.returncode == 0 else "fail", None, 0.0)
 
 
 def _run_map(
@@ -612,21 +656,26 @@ def _run_map(
     directory: Path,
     hard_time_limit: float | None,
     spent_time: float,
-) -> tuple[str, str | None, float]:
+) -> NodeRunResult:
     map_name = parse_node_name(node_run_name)
     nodes = workflow["nodes"]
     defaults = workflow.get("defaults", {})
 
     def run_fanned_out(
-        fanned_out_node: str, fanned_out_run_name: str
-    ) -> tuple[str, str | None, float]:
+        fanned_out_node: str, fanned_out_run_name: str, resumed_session: str | None
+    ) -> NodeRunResult:
         fanned_out_definition = nodes[fanned_out_node]
         _start_node_run(
-            directory, fanned_out_run_name, fanned_out_definition, handoff, map_name=map_name
+            directory,
+            fanned_out_run_name,
+            fanned_out_definition,
+            handoff,
+            map_name=map_name,
+            session=resumed_session,
         )
         try:
             if "agent" in fanned_out_definition:
-                outcome, handoff_text, cost = _run_agent(
+                result = _run_agent(
                     fanned_out_run_name,
                     fanned_out_definition,
                     defaults,
@@ -635,51 +684,91 @@ def _run_map(
                     directory,
                     hard_time_limit,
                     spent_time,
+                    resumed_session,
                 )
             else:
-                outcome, handoff_text, cost = _run_command(
+                result = _run_command(
                     fanned_out_run_name,
                     fanned_out_definition,
                     directory,
                     hard_time_limit,
                     spent_time,
                 )
-            end_fields: dict[str, Any] = {"outcome": outcome}
+            end_fields: dict[str, Any] = {"outcome": result.outcome}
         except NodeFailure as error:
             # A fanned-out node's failure counts as not passing; the run continues.
-            outcome, handoff_text, cost = "fail", None, error.cost
+            result = NodeRunResult("fail", None, error.cost, error.session)
             end_fields = {"failure": str(error)}
-        print(f"{map_name}/{fanned_out_node}: {outcome}", flush=True)
+        print(f"{map_name}/{fanned_out_node}: {result.outcome}", flush=True)
         _end_node_run(
-            directory, fanned_out_run_name, end_fields, handoff_text, cost, map_name=map_name
+            directory,
+            fanned_out_run_name,
+            end_fields,
+            result.handoff,
+            result.cost,
+            result.session,
+            state,
+            map_name=map_name,
         )
-        return outcome, handoff_text, cost
+        return result
 
     fanned_out_nodes = node_definition["map"]
+    fanned_out_sessions = [
+        _take_session(state, fanned_out_node) for fanned_out_node in fanned_out_nodes
+    ]
     fanned_out_runs = [
         _name_next_node_run(state, directory, fanned_out_node)
         for fanned_out_node in fanned_out_nodes
     ]
     with ThreadPoolExecutor(max_workers=len(fanned_out_nodes)) as pool:
-        fanned_out_results = list(pool.map(run_fanned_out, fanned_out_nodes, fanned_out_runs))
-    resolve = all if node_definition["resolve"] == "all" else any
-    outcome = (
-        "pass"
-        if resolve(fanned_out_outcome == "pass" for fanned_out_outcome, _, _ in fanned_out_results)
-        else "fail"
-    )
-    handoff_blocks = [
-        f"{fanned_out_node}:\n{handoff_text}"
-        for fanned_out_node, (_, handoff_text, _) in zip(
-            fanned_out_nodes, fanned_out_results, strict=True
+        fanned_out_results = list(
+            pool.map(run_fanned_out, fanned_out_nodes, fanned_out_runs, fanned_out_sessions)
         )
-        if handoff_text is not None
+    resolve = all if node_definition["resolve"] == "all" else any
+    handoff_blocks = [
+        f"{fanned_out_node}:\n{result.handoff}"
+        for fanned_out_node, result in zip(fanned_out_nodes, fanned_out_results, strict=True)
+        if result.handoff is not None
     ]
-    return (
-        outcome,
+    return NodeRunResult(
+        "pass" if resolve(result.outcome == "pass" for result in fanned_out_results) else "fail",
         "\n\n".join(handoff_blocks) if handoff_blocks else None,
-        sum(cost for _, _, cost in fanned_out_results),
+        sum(result.cost for result in fanned_out_results),
     )
+
+
+def _build_agent_message(
+    agent_node_name: str,
+    run_input: str,
+    handoff: tuple[str, str] | None,
+    resumed_session: str | None,
+) -> str:
+    """Build the user message of an agent node run.
+
+    A fresh session receives the run input and the handoff; a resumed session receives the
+    handoff alone, or a fixed line when there is none.
+    """
+    handoff_block = None if handoff is None else f"Handoff from {handoff[0]}:\n{handoff[1]}"
+    if resumed_session is not None:
+        return handoff_block or f"The run re-entered {agent_node_name} with no handoff."
+    return run_input if handoff_block is None else f"{run_input}\n\n{handoff_block}"
+
+
+def _read_stdout_lines(directory: Path, node_run_name: str) -> list[str]:
+    """Read the lines a node run wrote to its stdout file."""
+    return build_output_path(directory, node_run_name, "stdout").read_text().splitlines()
+
+
+def _record_fallback(directory: Path, node_run_name: str, exit_message: str) -> None:
+    """Move the resumed spawn's output aside, open fresh files, then journal the fallback.
+
+    The event comes last, so a follower that reads it finds the fresh output files.
+    """
+    for stream in ("stdout", "stderr"):
+        plain_path = build_output_path(directory, node_run_name, stream)
+        plain_path.rename(build_output_path(directory, node_run_name, f"resume.{stream}"))
+        plain_path.touch()
+    _append_journal_event(directory, "fallback", node=node_run_name, error=exit_message)
 
 
 def _run_agent(
@@ -691,55 +780,89 @@ def _run_agent(
     directory: Path,
     hard_time_limit: float | None,
     spent_time: float,
-) -> tuple[str, str | None, float]:
-    """Run the agent; return its outcome, handoff, and the USD cost the harness reported.
+    resumed_session: str | None,
+) -> NodeRunResult:
+    """Run the agent and return what the node run produced.
 
-    The harness reads the result from the JSONL events the agent writes to stdout.
+    The harness reads the result from the JSONL events the agent writes to stdout. A resumed
+    spawn that exits non-zero falls back to one fresh spawn under the same node run name; the
+    resumed spawn's cost and time count toward the run.
     """
     agent_node_name = parse_node_name(node_run_name)
     # The definition resolves from the invocation directory (the process cwd);
     # only the spawned agent executes in the target directory.
     agent_definition = _load_agent_definition(agent_node_name, node_definition["agent"])
-    prompt = run_input
-    if handoff is not None:
-        source, text = handoff
-        prompt = f"{run_input}\n\nHandoff from {source}:\n{text}"
     settings = resolve_agent_settings(node_definition, defaults)
     harness = find_harness(settings["harness"])
     invocation = AgentInvocation(
         agent_node_name=agent_node_name,
         agent_name=node_definition["agent"],
         agent_definition=agent_definition,
-        prompt=prompt,
+        prompt=_build_agent_message(agent_node_name, run_input, handoff, resumed_session),
         model=settings["model"],
         effort=settings["effort"],
         outcomes=node_definition["outcomes"],
         allowed_tools=settings.get("allowed_tools"),
         sandbox=settings.get("sandbox", "workspace-write"),
         web_search=settings.get("web_search"),
+        session=resumed_session,
     )
-    with harness.build_argv(invocation) as argv:
-        completed_process = _spawn(node_run_name, argv, directory, hard_time_limit, spent_time)
-    if completed_process.returncode != 0:
-        raise NodeFailure(
-            f"node '{agent_node_name}': agent exited with code {completed_process.returncode}"
+    resumed_cost = 0.0
+    started_monotonic = time.monotonic()
+    try:
+        with harness.build_argv(invocation) as argv:
+            completed_process = _spawn(node_run_name, argv, directory, hard_time_limit, spent_time)
+        if resumed_session is not None and completed_process.returncode != 0:
+            # The resumed spawn counts what it spent, whether or not its output holds a result.
+            try:
+                resumed_cost = harness.read_result(
+                    invocation, _read_stdout_lines(directory, node_run_name)
+                )[1]
+            except NodeFailure as read_failure:
+                resumed_cost = read_failure.cost
+            _record_fallback(
+                directory,
+                node_run_name,
+                f"node '{agent_node_name}': agent exited with code {completed_process.returncode}",
+            )
+            invocation = replace(
+                invocation,
+                session=None,
+                prompt=_build_agent_message(agent_node_name, run_input, handoff, None),
+            )
+            with harness.build_argv(invocation) as argv:
+                completed_process = _spawn(
+                    node_run_name,
+                    argv,
+                    directory,
+                    hard_time_limit,
+                    spent_time + time.monotonic() - started_monotonic,
+                )
+        if completed_process.returncode != 0:
+            raise NodeFailure(
+                f"node '{agent_node_name}': agent exited with code {completed_process.returncode}"
+            )
+        stdout_lines = _read_stdout_lines(directory, node_run_name)
+        structured_output, cost = harness.read_result(invocation, stdout_lines)
+        if (
+            not isinstance(structured_output, dict)
+            or structured_output.get("outcome") not in node_definition["outcomes"]
+        ):
+            raise NodeFailure(
+                f"node '{agent_node_name}': agent reported no outcome from {node_definition['outcomes']}",
+                cost,
+            )
+        handoff_text = structured_output.get("handoff")
+        return NodeRunResult(
+            structured_output["outcome"],
+            str(handoff_text) if handoff_text is not None else None,
+            cost + resumed_cost,
+            harness.read_session(stdout_lines),
         )
-    stdout_lines = build_output_path(directory, node_run_name, "stdout").read_text().splitlines()
-    structured_output, cost = harness.read_result(invocation, stdout_lines)
-    if (
-        not isinstance(structured_output, dict)
-        or structured_output.get("outcome") not in node_definition["outcomes"]
-    ):
-        raise NodeFailure(
-            f"node '{agent_node_name}': agent reported no outcome from {node_definition['outcomes']}",
-            cost,
-        )
-    handoff_text = structured_output.get("handoff")
-    return (
-        structured_output["outcome"],
-        str(handoff_text) if handoff_text is not None else None,
-        cost,
-    )
+    except NodeFailure as error:
+        error.cost += resumed_cost
+        error.session = harness.read_session(_read_stdout_lines(directory, node_run_name))
+        raise
 
 
 def _load_agent_definition(agent_node_name: str, agent_name: str) -> dict[str, str]:

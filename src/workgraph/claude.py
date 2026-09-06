@@ -8,7 +8,13 @@ from typing import Any
 
 from rich.text import Text
 
-from workgraph.harness import AgentInvocation, NodeFailure, iter_jsonl_events, split_lines
+from workgraph.harness import (
+    AgentInvocation,
+    NodeFailure,
+    iter_jsonl_events,
+    read_last_value,
+    split_lines,
+)
 
 
 @contextmanager
@@ -47,6 +53,9 @@ def build_argv(invocation: AgentInvocation) -> Iterator[list[str]]:
     allowed_tools = agent_definition.get("tools", invocation.allowed_tools)
     if allowed_tools is not None:
         argv += ["--allowedTools", allowed_tools]
+    if invocation.session is not None:
+        # The node run continues the session in place.
+        argv += ["--resume", invocation.session]
     yield argv
 
 
@@ -67,6 +76,11 @@ def read_result(invocation: AgentInvocation, stdout_lines: Sequence[str]) -> tup
     if result_event.get("is_error"):
         raise NodeFailure(f"node '{agent_node_name}': agent reported an error", cost)
     return result_event.get("structured_output"), cost
+
+
+def read_session(stdout_lines: Sequence[str]) -> str | None:
+    """Return the session id of the last stream event that carries one."""
+    return read_last_value(iter_jsonl_events(stdout_lines), "session_id")
 
 
 def render_transcript(stdout_lines: Sequence[str]) -> list[Text]:
