@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.2.11 (2026-09-06)
+
+### Patch
+
+- Post the implementation plan to the issue and read it from there
+  ([`9f71cf3`](https://github.com/sylmarien/workgraph/commit/9f71cf386e3b69eacdea1bd42dd3bb9841b2b3a5))
+
+
 ## v0.2.10 (2026-09-06)
 
 ### Patch
