@@ -64,11 +64,15 @@ file="responses-$agent"
 [ -f "$file" ] || file="responses"
 IFS= read -r response < "$file"
 sed -i 1d "$file"
-case "$response" in
-  EXIT*) exit "${response#EXIT}" ;;
-  SLEEP*) exec sleep "${response#SLEEP}" ;;
-  *) printf '%s\\n' "$response" | tr '\\t' '\\n' ;;
-esac
+IFS=$(printf '\\t')
+for field in $response; do
+  case "$field" in
+    EXIT*) exit "${field#EXIT}" ;;
+    SLEEP*) sleep "${field#SLEEP}" ;;
+    INTERRUPT) kill -INT "$PPID"; sleep 5 ;;
+    *) printf '%s\\n' "$field" ;;
+  esac
+done
 """
 
 
@@ -292,9 +296,12 @@ def queue_agent_responses(project: Path, agent_name: str, *responses: str) -> No
 
 
 def build_outcome_response(
-    outcome: str, handoff: str | None = None, cost: float | None = None
+    outcome: str,
+    handoff: str | None = None,
+    cost: float | None = None,
+    session: str | None = None,
 ) -> str:
-    """Build a fake claude result JSON reporting the outcome, an optional handoff and cost."""
+    """Build a fake claude result JSON reporting the outcome and an optional handoff, cost, session."""
     structured_output: dict[str, str] = {"outcome": outcome}
     if handoff is not None:
         structured_output["handoff"] = handoff
@@ -305,12 +312,19 @@ def build_outcome_response(
     }
     if cost is not None:
         result_event["total_cost_usd"] = cost
+    if session is not None:
+        result_event["session_id"] = session
     return json.dumps(result_event)
 
 
 def build_codex_event(item_type: str, **item_fields: object) -> str:
     """Build a fake codex completed item event of the type, carrying the fields."""
     return json.dumps({"type": "item.completed", "item": {"type": item_type, **item_fields}})
+
+
+def build_codex_thread_event(thread_id: str) -> str:
+    """Build a fake codex thread.started event naming the thread."""
+    return json.dumps({"type": "thread.started", "thread_id": thread_id})
 
 
 def build_codex_response(outcome: str, handoff: str | None = None) -> str:
@@ -333,6 +347,19 @@ def read_spawn_argv(project: Path, harness_name: str = "claude") -> list[list[st
 def find_flag_value(argv: list[str], flag: str) -> str:
     """Return the value following the flag in the argv."""
     return argv[argv.index(flag) + 1]
+
+
+# Every Claude flag a fresh and a resumed spawn of the same agent node carry with the same value.
+SHARED_CLAUDE_FLAGS = (
+    "--output-format",
+    "--json-schema",
+    "--agents",
+    "--agent",
+    "--permission-mode",
+    "--model",
+    "--effort",
+    "--allowedTools",
+)
 
 
 def read_project_state() -> dict[str, object]:

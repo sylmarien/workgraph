@@ -50,8 +50,13 @@ class _LineReader:
     """
 
     def __init__(self, path: Path) -> None:
+        self.path = path
         self.file = path.open("rb")
         self.partial_line = b""
+
+    def has_moved_aside(self) -> bool:
+        """Return whether the path now names a different file than the open one, as a rename does."""
+        return os.stat(self.path).st_ino != os.fstat(self.file.fileno()).st_ino
 
     def check_replaced(self) -> None:
         """Raise when the file was unlinked or shrank: it belongs to a replaced run."""
@@ -184,20 +189,31 @@ def follow_node(directory: Path, node_run_identifier: str, raw: bool) -> Iterato
     while True:
         output_complete = node_run_name in record.end_events or record.stop_event is not None
         if output_readers is not None:
-            stdout_lines, stderr_lines = (
-                reader.read_lines(include_partial=output_complete) for reader in output_readers
-            )
-            yield from _render_output_lines(stdout_lines, transcript_harness)
-            if stderr_lines:
-                yield StderrLine("\n".join(stderr_lines) + "\n")
+            yield from _render_new_output(output_readers, transcript_harness, output_complete)
         if output_complete:
             break
         record.poll()
+        if output_readers is not None and output_readers[0].has_moved_aside():
+            yield from _render_new_output(output_readers, transcript_harness, True)
+            output_readers = _open_outputs(record, node_run_name)
     now = record.now
     yield Text()
     yield from _render_status(record, node_run_name, now)
     yield Text()
     yield from _render_footer(record, node_run_name, now)
+
+
+def _render_new_output(
+    output_readers: tuple[_LineReader, _LineReader],
+    transcript_harness: Harness | None,
+    include_partial: bool,
+) -> Iterator[Line]:
+    """Yield the new stdout lines rendered, then the new stderr lines as one StderrLine."""
+    stdout_reader, stderr_reader = output_readers
+    yield from _render_output_lines(stdout_reader.read_lines(include_partial), transcript_harness)
+    stderr_lines = stderr_reader.read_lines(include_partial)
+    if stderr_lines:
+        yield StderrLine("\n".join(stderr_lines) + "\n")
 
 
 def _render_node_run(record: _RunRecord, node_run_name: str, raw: bool) -> list[Line]:
@@ -311,7 +327,8 @@ class _JournalRenderer:
 
         The remaining output of a node run, a trailing partial line included, precedes its
         end line, or the resume or stop line that follows its interruption. With include_partial,
-        a trailing partial line of a node run in progress renders as a line.
+        a trailing partial line of a node run in progress renders as a line. The resumed
+        spawn's remaining output precedes the fallback line.
         """
         for event in self.record.events[self.rendered_event_count :]:
             if not self.with_nodes:
@@ -322,6 +339,9 @@ class _JournalRenderer:
                     closing_node_runs = [event["node"]]
                 case "resume" | "stop":
                     closing_node_runs = list(self.output_readers)
+                case "fallback":
+                    yield from self._reopen_after_fallback(event["node"])
+                    closing_node_runs = []
                 case _:
                     closing_node_runs = []
             for node_run_name in closing_node_runs:
@@ -336,6 +356,17 @@ class _JournalRenderer:
         self.rendered_event_count = len(self.record.events)
         for node_run_name in self.output_readers:
             yield from self._render_output(node_run_name, include_partial)
+
+    def _reopen_after_fallback(self, node_run_name: str) -> Iterator[Text]:
+        """Render the resumed spawn's remaining output, then reopen the plain files.
+
+        A renderer that opened the files after the fallback finds them in place and renders
+        nothing.
+        """
+        if not self.output_readers[node_run_name][0].has_moved_aside():
+            return
+        yield from self._render_output(node_run_name, include_partial=True)
+        self.output_readers[node_run_name] = _open_outputs(self.record, node_run_name)
 
     def _render_output(self, node_run_name: str, include_partial: bool) -> Iterator[Text]:
         """Render the new lines of a node run's output: stdout, then stderr, each with its origin.
@@ -378,6 +409,9 @@ class _JournalRenderer:
                     event_text.append(f"  ${event['cost']:.2f}", GREY)
             case "limit":
                 event_text = Text(f"{event['node']}: LIMIT → {event['target']}", "yellow")
+            case "fallback":
+                event_text = Text(f"{event['node']}: FALLBACK → fresh spawn", "yellow")
+                event_text.append(f"  {event['error']}", GREY)
             case "resume":
                 if event.get("decision"):
                     event_text = Text(
@@ -485,7 +519,7 @@ def _render_section(title: str, body: Sequence[Line]) -> list[Line]:
 
 
 def _render_input(run_input: str, handoff: dict[str, str] | None) -> list[Line]:
-    """Return the prompt as `run._run_agent` builds it: the run input, then the delivered handoff."""
+    """Return the run input, then the delivered handoff."""
     lines: list[Line] = [Text(run_input)]
     if handoff:
         lines += [Text(), Text(f"Handoff from {handoff['source']}:", "bold")]

@@ -87,6 +87,44 @@ apply. Under `--permission-mode dontAsk`, Claude denies a tool those
 settings do not pre-approve. Without `web_search`, Codex applies its own
 configuration.
 
+## Agent sessions
+
+Every path back into an agent node resumes the agent session of the node's
+latest node run in the run: a transition, a `LIMIT` diversion, a gate
+decision, a fan-out, and the grace entry of a `workgraph resume`. A failed
+node run's session is resumed too.
+
+- A resumed spawn receives the handoff alone, in the same
+  `Handoff from <source>:` form, without the run input. Without a handoff, it
+  receives the line `The run re-entered <node> with no handoff.`
+- Every setting of a fresh spawn applies: the model, the effort, the outcome
+  schema, and the harness settings. Claude resumes with `--resume <session>`
+  and passes the agent definition again. Codex runs
+  `codex exec resume <session>`, passes the sandbox as
+  `-c sandbox_mode=<value>` because that form has no `--sandbox` flag, and
+  passes no `developer_instructions`; the session holds them.
+- The first node run of a node starts fresh, as does a node run following one
+  that has no `end` event, such as one cut by an interrupt. A new `run` wipes
+  the run record, so its first node run of each node starts fresh.
+- The `start` event carries `session` when the node run resumes one, the `end`
+  event carries the session the node run ended with, and the run state keeps
+  the latest session per node under `sessions`.
+
+When a resumed spawn exits non-zero, the same node run spawns once more as a
+fresh agent with the full prompt of a fresh spawn: the run input, then the
+handoff.
+
+- The entry, the resumed spawn, and the fallback are one node run and one
+  visit. The resumed spawn's cost and time count toward the run.
+- The `fallback` event carries `node`, the node run name, and `error`, the
+  exit message of the resumed spawn.
+- Before the fresh spawn, workgraph renames the resumed spawn's output files
+  to `<node run>.resume.stdout` and `.resume.stderr`. The plain files always
+  hold the spawn that ended the node run.
+- Only a non-zero exit of a resumed spawn causes a fallback. A first entry
+  that exits non-zero, a spawn failure, a hard time limit, and a fresh spawn
+  that fails after a fallback are node failures.
+
 ## Time budget
 
 A workflow may bound the wall-clock time a run spends in node runs:

@@ -16,7 +16,9 @@ The run input names a GitHub issue. Read it, implement it, write tests.
 
 - The body is the agent's prompt. Claude receives it as the subagent prompt
   through `--agents`; Codex receives it as `developer_instructions`. The run
-  input, plus any handoff, arrives as the user message.
+  input, plus any handoff, arrives as the user message of a fresh session; a
+  resumed session receives the handoff alone (see
+  [Agent sessions](workflow-files.md#agent-sessions)).
 - `tools` becomes Claude's `--allowedTools` and overrides the workflow's
   `allowed_tools`. Without either setting, workgraph passes no
   `--allowedTools`. Claude agents run with `--permission-mode dontAsk`;

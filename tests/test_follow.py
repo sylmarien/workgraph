@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 
 from tests.test_show_journal import (
+    AT_PLAN_2_EVENTS,
     ENDED_EVENTS,
     IN_PROGRESS_EVENTS,
     JOURNAL_ENDED_OUTPUT,
@@ -22,6 +23,7 @@ from tests.test_show_node import (
     build_assistant_event,
     build_end_event,
     build_event,
+    build_start_event,
     build_text_block,
     build_tool_use_block,
     write_record,
@@ -373,3 +375,74 @@ def test_show_node_follow_on_a_run_that_exits_without_a_stop_is_an_error(
     output, error_output = capsys.readouterr()
     assert output.endswith("\n── stdout ──\n")
     assert error_output == "the run stopped without a stop event\n"
+
+
+# plan#2 in progress, resuming the session of plan#1.
+RESUMED_PLAN_2_EVENTS = [*AT_PLAN_2_EVENTS[:-1], build_start_event("plan#2", 91, session="plan-1")]
+PLAN_2_ENDED_AFTER_FALLBACK_EVENTS = [
+    build_end_event(
+        "plan#2",
+        100,
+        outcome="done",
+        target="checks",
+        cost=0.1,
+        session="plan-2",
+        spent_time=99,
+        spent_cost=1.0213,
+    ),
+    build_event("stop", 100, reason="gate", node="ship"),
+]
+
+
+def fall_back(project: Path) -> None:
+    """Move plan#2's output aside, open fresh files, then journal the fallback, as a run does."""
+    for stream in ("stdout", "stderr"):
+        output_path = project / RUN_DIR / f"plan#2.{stream}"
+        output_path.rename(project / RUN_DIR / f"plan#2.resume.{stream}")
+        output_path.touch()
+    append_events(project, build_event("fallback", 95, node="plan#2", error="boom"))
+
+
+def queue_fallback_actions(project: Path, queue_actions: Callable[..., None]) -> None:
+    """Queue a resumed spawn that falls back, then a fresh spawn that ends the node run."""
+    queue_actions(
+        lambda: append_output(
+            project, "plan#2.stdout", build_assistant_event(build_text_block("Resuming.")) + "\n"
+        ),
+        lambda: fall_back(project),
+        lambda: append_output(
+            project,
+            "plan#2.stdout",
+            build_assistant_event(build_text_block("Starting over.")) + "\n",
+        ),
+        lambda: append_events(project, *PLAN_2_ENDED_AFTER_FALLBACK_EVENTS),
+    )
+
+
+def test_show_node_follow_prints_the_fresh_output_after_a_fallback(
+    dev_project: Path, capsys: pytest.CaptureFixture[str], queue_actions: Callable[..., None]
+) -> None:
+    write_record(dev_project, RESUMED_PLAN_2_EVENTS)
+    (dev_project / LOCK_FILE).touch()
+    queue_fallback_actions(dev_project, queue_actions)
+    assert main(["show-node", "plan#2", "--follow"]) == 0
+    assert (
+        "── stdout ──\nResuming.\nStarting over.\n\n"
+        "ended    2026-08-31T12:01:40+02:00  9s\ncost     $0.10  spent $1.02\n\n"
+        "── outcome ──\ndone → checks\n" in capsys.readouterr().out
+    )
+
+
+def test_with_nodes_follow_prints_the_fresh_output_after_a_fallback(
+    dev_project: Path, capsys: pytest.CaptureFixture[str], queue_actions: Callable[..., None]
+) -> None:
+    write_record(dev_project, RESUMED_PLAN_2_EVENTS)
+    (dev_project / LOCK_FILE).touch()
+    queue_fallback_actions(dev_project, queue_actions)
+    assert main(["show-journal", "--with-nodes", "--follow"]) == 0
+    output = capsys.readouterr().out
+    assert (
+        "[plan#2] Resuming.\n"
+        "[workgraph#] 2026-08-31T12:01:35+02:00  plan#2: FALLBACK → fresh spawn  boom\n"
+        "[plan#2] Starting over.\n[workgraph#] "
+    ) in output

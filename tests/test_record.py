@@ -18,12 +18,14 @@ from tests.conftest import (
     build_outcome_response,
     find_flag_value,
     queue_agent_responses,
+    queue_responses,
     read_project_state,
     read_spawn_argv,
     set_up_cost_run,
     write_agent,
     write_workflow,
 )
+from tests.test_run import FALLBACK_RESPONSES, write_rework_project
 from workgraph.cli import main
 from workgraph.run import RUN_DIR, read_journal
 
@@ -403,3 +405,42 @@ def test_resume_after_an_interruption_in_a_fan_out_starts_the_next_node_runs(
     assert main(["resume"]) == 0
     start_events = [event for event in read_journal_events() if event["event"] == "start"]
     assert [event["node"] for event in start_events] == ["checks#1", "lint#1", "checks#2", "lint#2"]
+
+
+def test_a_fallback_journals_its_event_and_moves_the_resume_output_aside(
+    project: Path, fake_claude: None
+) -> None:
+    write_rework_project(project)
+    queue_responses(project, *FALLBACK_RESPONSES)
+    assert main(["run", "rework", "issue #9"]) == 0
+    events = read_journal_events()
+    assert events[1] == {"event": "start", "node": "plan#1", "handoff": None}
+    assert events[2]["session"] == "plan-1"
+    assert events[3:] == [
+        {
+            "event": "start",
+            "node": "plan#2",
+            "handoff": {"source": "plan", "text": "Again."},
+            "session": "plan-1",
+        },
+        {"event": "fallback", "node": "plan#2", "error": "node 'plan': agent exited with code 1"},
+        {
+            "event": "end",
+            "node": "plan#2",
+            "outcome": "done",
+            "handoff": None,
+            "target": "END",
+            "map": None,
+            "cost": 0.75,
+            "session": "plan-2",
+            "spent_time": NEAR_ZERO_SECONDS,
+            "spent_cost": 0.75,
+        },
+        {"event": "stop", "reason": "end", "node": "plan"},
+    ]
+    resume_stdout = read_output("plan#2", "resume.stdout")
+    assert json.loads(resume_stdout)["session_id"] == "plan-1"
+    assert read_output("plan#2", "resume.stderr") == ""
+    assert json.loads(read_output("plan#2", "stdout"))["session_id"] == "plan-2"
+    assert read_output("plan#2", "stderr") == ""
+    assert "plan#1.resume.stdout" not in list_record_files()

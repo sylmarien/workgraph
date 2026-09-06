@@ -373,3 +373,67 @@ def test_colors_on_a_terminal(
     assert "\x1b[1;33mparked at ship: Ship it?\x1b[0m" in output
     assert "\x1b[32mEND\x1b[0m" in output
     assert "plan#1: done → checks\x1b[38;5;248m  30s" in output
+
+
+# The plan#2 node run resumed the session of plan#1, then fell back to a fresh spawn.
+FALLBACK_EVENTS = [
+    *PARKED_EVENTS[:9],
+    build_start_event("plan#2", 91, session="plan-1"),
+    build_event("fallback", 95, node="plan#2", error="boom"),
+    build_end_event(
+        "plan#2",
+        100,
+        outcome="done",
+        target="checks",
+        cost=0.1,
+        session="plan-2",
+        spent_time=99,
+        spent_cost=1.0213,
+    ),
+    *PARKED_EVENTS[11:],
+]
+
+
+def test_sessions_and_a_fallback_leave_the_status_unchanged(
+    dev_project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_record(dev_project, PARKED_EVENTS)
+    write_state(dev_project, node="ship", spent_time=3770, spent_cost=2.27)
+    assert main(["status"]) == 0
+    plain_output = capsys.readouterr().out
+    write_record(dev_project, FALLBACK_EVENTS)
+    assert main(["status"]) == 0
+    assert capsys.readouterr().out == plain_output
+
+
+def test_a_fallback_prints_its_line_between_the_start_and_the_end(
+    dev_project: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.delenv("COLORTERM", raising=False)
+    write_record(dev_project, FALLBACK_EVENTS)
+    assert main(["show-journal"]) == 0
+    assert (
+        "plan#2: started\x1b[0m\n"
+        "\x1b[38;5;248m2026-08-31T12:01:35+02:00  \x1b[0m"
+        "\x1b[33mplan#2: FALLBACK → fresh spawn\x1b[0m\x1b[38;5;248m  boom\x1b[0m\n"
+        "\x1b[38;5;248m2026-08-31T12:01:40+02:00  \x1b[0mplan#2: done → checks"
+    ) in capsys.readouterr().out
+
+
+def test_with_nodes_prints_the_fresh_output_of_a_node_run_that_fell_back(
+    dev_project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_record(
+        dev_project,
+        FALLBACK_EVENTS,
+        {
+            "plan#2.resume.stdout": build_assistant_event(build_text_block("Resuming.")) + "\n",
+            "plan#2.stdout": build_assistant_event(build_text_block("Starting over.")) + "\n",
+        },
+    )
+    assert main(["show-journal", "--with-nodes"]) == 0
+    assert [
+        line for line in capsys.readouterr().out.splitlines() if line.startswith("[plan#2]")
+    ] == ["[plan#2] Starting over."]

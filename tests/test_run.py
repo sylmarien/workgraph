@@ -19,10 +19,12 @@ from tests.conftest import (
     MINIMAL_WORKFLOW,
     NEAR_ZERO_SECONDS,
     PLANNER_AGENT,
+    SHARED_CLAUDE_FLAGS,
     SOFT_WORKFLOW,
     SPIN_WORKFLOW,
     build_codex_event,
     build_codex_response,
+    build_codex_thread_event,
     build_outcome_response,
     find_flag_value,
     queue_agent_responses,
@@ -36,7 +38,7 @@ from tests.conftest import (
 )
 from workgraph import codex
 from workgraph.cli import main
-from workgraph.run import JOURNAL_FILE, LOCK_FILE, STATE_FILE
+from workgraph.run import JOURNAL_FILE, LOCK_FILE, STATE_FILE, read_journal
 
 RESET_WORKFLOW = """
 start = "check"
@@ -483,6 +485,9 @@ def test_each_agent_failure_kind_stops_the_run(
     assert message in captured.err
     assert read_project_state()["visits"] == {"plan": 1}
     assert not LOCK_FILE.exists()
+    # A first entry has no session to resume, so a non-zero exit has no fallback.
+    assert len(read_spawn_argv(project)) == 1
+    assert "fallback" not in JOURNAL_FILE.read_text()
 
 
 def test_project_agent_definition_shadows_user_scope(
@@ -2420,3 +2425,316 @@ def test_a_codex_node_run_keeps_the_jsonl_in_its_stdout_file(
     queue_responses(project, response)
     assert main(["run", "agents", "input"]) == 0
     assert (STATE_FILE.parent / "plan#1.stdout").read_text() == f"{response}\n"
+
+
+REWORK_WORKFLOW = """
+start = "plan"
+
+[defaults]
+harness = "claude"
+model = "opus"
+effort = "high"
+
+[nodes.plan]
+agent = "planner"
+outcomes = ["done", "rework"]
+
+[nodes.plan.transitions]
+done = "END"
+rework = "plan"
+"""
+
+GATED_FAN_AGENTS_WORKFLOW = """
+start = "checks"
+
+[defaults]
+harness = "claude"
+model = "opus"
+effort = "high"
+
+[nodes.checks]
+map = ["lint", "review"]
+resolve = "all"
+
+[nodes.checks.transitions]
+pass = "approve"
+fail = "approve"
+
+[nodes.lint]
+agent = "linter"
+outcomes = ["pass"]
+
+[nodes.review]
+agent = "reviewer"
+outcomes = ["pass"]
+
+[nodes.approve]
+gate = "Ship it?"
+
+[nodes.approve.transitions]
+accept = "END"
+reject = "checks"
+"""
+
+
+def write_pair_project(project: Path) -> None:
+    """Write the two-agent workflow and its two agent definitions."""
+    write_workflow(project, "pair", TWO_AGENTS_WORKFLOW)
+    write_agent(project, "planner", PLANNER_AGENT)
+    write_agent(project, "builder", "You are the builder.")
+
+
+def write_rework_project(project: Path) -> None:
+    """Write the workflow whose single agent node loops back into itself."""
+    write_workflow(project, "rework", REWORK_WORKFLOW)
+    write_agent(project, "planner", PLANNER_AGENT)
+
+
+def test_a_re_entered_claude_node_resumes_its_latest_session(
+    project: Path, fake_claude: None
+) -> None:
+    write_pair_project(project)
+    queue_responses(
+        project,
+        build_outcome_response("done", session="plan-1"),
+        build_outcome_response("rework", handoff="Redo the plan.", session="build-1"),
+        build_outcome_response("done", session="plan-2"),
+        build_outcome_response("done", session="build-2"),
+    )
+    assert main(["run", "pair", "issue #9"]) == 0
+    first_plan_argv, _, second_plan_argv, _ = read_spawn_argv(project)
+    assert "--resume" not in first_plan_argv
+    assert find_flag_value(second_plan_argv, "--resume") == "plan-1"
+    for flag in SHARED_CLAUDE_FLAGS:
+        assert find_flag_value(second_plan_argv, flag) == find_flag_value(first_plan_argv, flag)
+    assert find_flag_value(second_plan_argv, "-p") == "Handoff from build:\nRedo the plan."
+    assert read_project_state()["sessions"] == {"plan": "plan-2", "build": "build-2"}
+
+
+def test_a_re_entered_codex_node_resumes_its_session(project: Path, fake_codex: None) -> None:
+    write_workflow(project, "pair", select_codex_harness(TWO_AGENTS_WORKFLOW))
+    write_agent(project, "planner", PLANNER_AGENT)
+    write_agent(project, "builder", "You are the builder.")
+    queue_responses(
+        project,
+        build_codex_thread_event("plan-1") + "\t" + build_codex_response("done"),
+        build_codex_thread_event("build-1")
+        + "\t"
+        + build_codex_response("rework", handoff="Redo the plan."),
+        build_codex_thread_event("plan-2") + "\t" + build_codex_response("done"),
+        build_codex_thread_event("build-2") + "\t" + build_codex_response("done"),
+    )
+    assert main(["run", "pair", "issue #9"]) == 0
+    first_plan_argv, _, second_plan_argv, _ = read_spawn_argv(project, "codex")
+    assert second_plan_argv[:3] == ["exec", "resume", "plan-1"]
+    assert not any(arg.startswith("developer_instructions=") for arg in second_plan_argv)
+    for flag in ("--model", "-c"):
+        assert find_flag_value(second_plan_argv, flag) == find_flag_value(first_plan_argv, flag)
+    assert second_plan_argv[-2:] == ["--", "Handoff from build:\nRedo the plan."]
+    assert read_project_state()["sessions"] == {"plan": "plan-2", "build": "build-2"}
+    end_events = [event for event in read_journal(Path()) if event["event"] == "end"]
+    assert [event["session"] for event in end_events] == ["plan-1", "build-1", "plan-2", "build-2"]
+
+
+def test_a_re_entry_without_a_handoff_sends_the_fixed_line(
+    project: Path, fake_claude: None
+) -> None:
+    write_pair_project(project)
+    queue_responses(
+        project,
+        build_outcome_response("done", session="plan-1"),
+        build_outcome_response("rework"),
+        build_outcome_response("done"),
+        build_outcome_response("done"),
+    )
+    assert main(["run", "pair", "issue #9"]) == 0
+    assert (
+        find_flag_value(read_spawn_argv(project)[2], "-p")
+        == "The run re-entered plan with no handoff."
+    )
+
+
+def test_a_grace_entry_resumes_the_session_of_the_failed_node_run(
+    project: Path, fake_claude: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_workflow(project, "agents", AGENT_WORKFLOW)
+    write_agent(project, "planner", PLANNER_AGENT)
+    queue_responses(project, json.dumps({"type": "system", "session_id": "plan-1"}) + "\tEXIT2")
+    assert main(["run", "agents", "issue #9"]) == 2
+    assert read_project_state()["sessions"] == {"plan": "plan-1"}
+    capsys.readouterr()
+    assert main(["status"]) == 0
+    assert capsys.readouterr().out == (
+        "failure at plan · spent 0s\nnode 'plan': agent exited with code 2\nspent time: 0 s\n"
+    )
+    queue_responses(project, build_outcome_response("done", session="plan-2"))
+    assert main(["resume"]) == 0
+    assert find_flag_value(read_spawn_argv(project)[1], "--resume") == "plan-1"
+    assert "fallback" not in JOURNAL_FILE.read_text()
+
+
+def test_a_grace_entry_after_a_budget_stop_resumes_the_session(
+    project: Path, fake_claude: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_workflow(project, "rework", REWORK_WORKFLOW + "\n[budget]\ncost = 0.5\n")
+    write_agent(project, "planner", PLANNER_AGENT)
+    queue_responses(
+        project, build_outcome_response("rework", handoff="Again.", cost=1.0, session="plan-1")
+    )
+    assert main(["run", "rework", "issue #9"]) == 5
+    assert read_project_state()["sessions"] == {"plan": "plan-1"}
+    capsys.readouterr()
+    queue_responses(project, build_outcome_response("done", session="plan-2"))
+    assert main(["resume", "--add-cost", "1"]) == 0
+    assert capsys.readouterr().out == "plan: done\nEND · spent 0s · $1.00\n"
+    resumed_argv = read_spawn_argv(project)[1]
+    assert find_flag_value(resumed_argv, "--resume") == "plan-1"
+    assert find_flag_value(resumed_argv, "-p") == "Handoff from plan:\nAgain."
+    assert "fallback" not in JOURNAL_FILE.read_text()
+
+
+def test_a_node_run_cut_before_its_end_leaves_no_session(project: Path, fake_claude: None) -> None:
+    write_rework_project(project)
+    queue_responses(
+        project,
+        build_outcome_response("rework", handoff="Again.", session="plan-1"),
+        "INTERRUPT",
+    )
+    assert main(["run", "rework", "issue #9"]) == 130
+    assert read_project_state()["sessions"] == {}
+    queue_responses(project, build_outcome_response("done"))
+    assert main(["resume"]) == 0
+    assert "--resume" not in read_spawn_argv(project)[2]
+    assert "fallback" not in JOURNAL_FILE.read_text()
+
+
+def test_a_second_run_starts_its_first_node_run_fresh(project: Path, fake_claude: None) -> None:
+    write_workflow(project, "agents", AGENT_WORKFLOW)
+    write_agent(project, "planner", PLANNER_AGENT)
+    queue_responses(
+        project,
+        build_outcome_response("done", session="plan-1"),
+        build_outcome_response("done", session="plan-2"),
+    )
+    assert main(["run", "agents", "issue #9"]) == 0
+    assert main(["run", "agents", "issue #9"]) == 0
+    assert "--resume" not in read_spawn_argv(project)[1]
+
+
+FALLBACK_RESPONSES = (
+    build_outcome_response("rework", handoff="Again.", session="plan-1"),
+    "\t".join(
+        [
+            build_outcome_response("done", cost=0.25, session="plan-1"),
+            "SLEEP0.4",
+            "EXIT1",
+        ]
+    ),
+    build_outcome_response("done", cost=0.5, session="plan-2"),
+)
+
+
+def test_a_failed_resume_falls_back_to_one_fresh_spawn(
+    project: Path, fake_claude: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_rework_project(project)
+    queue_responses(project, *FALLBACK_RESPONSES)
+    assert main(["run", "rework", "issue #9"]) == 0
+    assert capsys.readouterr().out == "plan: rework\nplan: done\nEND · spent 0s · $0.75\n"
+    argvs = read_spawn_argv(project)
+    assert len(argvs) == 3
+    assert "--resume" not in argvs[2]
+    assert find_flag_value(argvs[2], "-p") == "issue #9\n\nHandoff from plan:\nAgain."
+    state = read_project_state()
+    assert state["visits"] == {"plan": 2}
+    assert state["sessions"] == {"plan": "plan-2"}
+    assert state["spent_cost"] == 0.75
+    spent_time = state["spent_time"]
+    assert isinstance(spent_time, float) and spent_time >= 0.4
+
+
+def test_a_failed_fresh_spawn_after_a_fallback_stops_the_run(
+    project: Path, fake_claude: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_rework_project(project)
+    queue_responses(
+        project,
+        build_outcome_response("rework", handoff="Again.", session="plan-1"),
+        "EXIT1",
+        "EXIT2",
+    )
+    assert main(["run", "rework", "issue #9"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == "plan: rework\nplan: failure\nfailure at plan · spent 0s\n"
+    assert captured.err == "node 'plan': agent exited with code 2\n"
+    assert len(read_spawn_argv(project)) == 3
+    assert [event["event"] for event in read_journal(Path())[3:]] == [
+        "start",
+        "fallback",
+        "end",
+        "stop",
+    ]
+
+
+def test_a_resumed_spawn_cut_at_the_hard_time_limit_fails_the_node(
+    project: Path, fake_claude: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_workflow(
+        project,
+        "rework",
+        REWORK_WORKFLOW.replace("[defaults]", "[budget]\ntime_hard = 0.3\n\n[defaults]"),
+    )
+    write_agent(project, "planner", PLANNER_AGENT)
+    queue_responses(
+        project,
+        build_outcome_response("rework", handoff="Again.", session="plan-1"),
+        "SLEEP5",
+    )
+    assert main(["run", "rework", "issue #9"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == "plan: rework\nplan: failure\nfailure at plan · spent 0s\n"
+    assert captured.err == "node 'plan': hard time limit of 0.3 s reached\n"
+    assert len(read_spawn_argv(project)) == 2
+    assert "fallback" not in JOURNAL_FILE.read_text()
+
+
+def test_a_failed_codex_resume_falls_back_to_a_fresh_session(
+    project: Path, fake_codex: None
+) -> None:
+    write_workflow(project, "rework", select_codex_harness(REWORK_WORKFLOW))
+    write_agent(project, "planner", PLANNER_AGENT)
+    queue_responses(
+        project,
+        build_codex_thread_event("plan-1")
+        + "\t"
+        + build_codex_response("rework", handoff="Again."),
+        "EXIT1",
+        build_codex_thread_event("plan-2") + "\t" + build_codex_response("done"),
+    )
+    assert main(["run", "rework", "issue #9"]) == 0
+    argvs = read_spawn_argv(project, "codex")
+    assert argvs[1][:3] == ["exec", "resume", "plan-1"]
+    assert argvs[2][:2] == ["exec", "--json"]
+    assert read_project_state()["sessions"] == {"plan": "plan-2"}
+
+
+def test_fanned_out_agent_nodes_resume_their_own_sessions(project: Path, fake_claude: None) -> None:
+    write_workflow(project, "fan", GATED_FAN_AGENTS_WORKFLOW)
+    for agent_name, node_name in (("linter", "lint"), ("reviewer", "review")):
+        write_agent(project, agent_name, f"You are the {agent_name}.")
+        queue_agent_responses(
+            project,
+            agent_name,
+            build_outcome_response("pass", session=f"{node_name}-1"),
+            build_outcome_response("pass", session=f"{node_name}-2"),
+        )
+    assert main(["run", "fan", "issue #9"]) == 4
+    assert read_project_state()["sessions"] == {"lint": "lint-1", "review": "review-1"}
+    assert main(["resume", "--decision", "reject", "--feedback", "Again."]) == 4
+    resumed_sessions = {
+        find_flag_value(argv, "--agent"): find_flag_value(argv, "--resume")
+        for argv in read_spawn_argv(project)
+        if "--resume" in argv
+    }
+    assert resumed_sessions == {"linter": "lint-1", "reviewer": "review-1"}
+    assert read_project_state()["sessions"] == {"lint": "lint-2", "review": "review-2"}

@@ -19,6 +19,8 @@ class NodeFailure(Exception):
         super().__init__(message)
         # The cost the harness reported before the failure, so the run still counts it.
         self.cost = cost
+        # The agent session the failed node run ended with, so a re-entry resumes it.
+        self.session: str | None = None
 
 
 @dataclass(frozen=True)
@@ -35,6 +37,8 @@ class AgentInvocation:
     allowed_tools: str | None = None
     sandbox: str = "workspace-write"
     web_search: Any = None
+    # The agent session to resume; None spawns a fresh session.
+    session: str | None = None
 
     @property
     def outcome_schema(self) -> dict[str, Any]:
@@ -67,6 +71,9 @@ class Harness(Protocol):
         an error; the failure carries the cost.
         """
 
+    def read_session(self, stdout_lines: Sequence[str]) -> str | None:
+        """Return the agent session the output names; None when it names none."""
+
     def render_transcript(self, stdout_lines: Sequence[str]) -> list[Text]:
         """Render agent stdout lines as transcript rows."""
 
@@ -80,6 +87,12 @@ def iter_jsonl_events(lines: Iterable[str]) -> Iterator[dict[str, Any]]:
             continue
         if isinstance(event, dict):
             yield event
+
+
+def read_last_value(events: Iterable[dict[str, Any]], key: str) -> str | None:
+    """Return the value of the key in the last event that carries it; None when none does."""
+    values = [event[key] for event in events if key in event]
+    return str(values[-1]) if values else None
 
 
 def split_lines(text: str | None) -> list[Text]:

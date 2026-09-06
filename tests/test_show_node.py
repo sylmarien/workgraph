@@ -554,3 +554,23 @@ def test_codex_raw_prints_the_file_unchanged(
 ) -> None:
     assert main(["show-node", "--raw", "plan#1"]) == 0
     assert read_stdout_section(capsys.readouterr().out) == CODEX_STDOUT
+
+
+def test_a_node_run_that_fell_back_shows_the_output_of_its_fresh_spawn(
+    recorded_project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    events = list(TEST_2_ENDED_EVENTS)
+    events[9] = build_start_event("plan#2", 91, CHECKS_DELIVERED_HANDOFF, session="plan-1")
+    events.insert(10, build_event("fallback", 95, node="plan#2", error="boom"))
+    write_record(
+        recorded_project,
+        events,
+        {
+            "plan#2.resume.stdout": build_assistant_event(build_text_block("Resuming.")) + "\n",
+            "plan#2.stdout": build_assistant_event(build_text_block("Starting over.")) + "\n",
+        },
+    )
+    assert main(["show-node", "plan#2"]) == 0
+    output = capsys.readouterr().out
+    assert output.startswith("plan#2\nstarted  2026-08-31T12:01:31+02:00\n")
+    assert read_stdout_section(output) == "Starting over.\n"
