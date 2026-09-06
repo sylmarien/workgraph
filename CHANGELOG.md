@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.2.12 (2026-09-06)
+
+### Patch
+
+- Resume the latest agent session of a node when the run re-enters it
+  ([`800e6a5`](https://github.com/sylmarien/workgraph/commit/800e6a53af0d4b59c2289aecc2cf7d22fb5716bf))
+
+
 ## v0.2.11 (2026-09-06)
 
 ### Patch
