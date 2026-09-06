@@ -53,15 +53,18 @@ class _LineReader:
         self.file = path.open("rb")
         self.partial_line = b""
 
+    def check_replaced(self) -> None:
+        """Raise when the file was unlinked or shrank: it belongs to a replaced run."""
+        file_stat = os.fstat(self.file.fileno())
+        if file_stat.st_nlink == 0 or file_stat.st_size < self.file.tell():
+            raise RecordError("the run was replaced")
+
     def read_lines(self, include_partial: bool = False) -> list[str]:
         """Return the lines completed since the last call. Bytes that are not UTF-8 read as `�`.
 
         With include_partial, a trailing partial line returns as a line: the writer has exited.
-        A file that was unlinked or shrank belongs to a replaced run.
         """
-        file_stat = os.fstat(self.file.fileno())
-        if file_stat.st_nlink == 0 or file_stat.st_size < self.file.tell():
-            raise RecordError("the run was replaced")
+        self.check_replaced()
         *lines, self.partial_line = (self.partial_line + self.file.read()).split(b"\n")
         if include_partial and self.partial_line:
             lines.append(self.partial_line)
@@ -173,7 +176,7 @@ def follow_node(directory: Path, node_run_identifier: str, raw: bool) -> Iterato
     output_readers = (
         None
         if "map" in record.find_node_definition(node_run_name)
-        else _open_outputs(directory, node_run_name)
+        else _open_outputs(record, node_run_name)
     )
     if output_readers is None:
         yield Text("(none: map node)", GREY)
@@ -204,7 +207,7 @@ def _render_node_run(record: _RunRecord, node_run_name: str, raw: bool) -> list[
     if "map" in record.find_node_definition(node_run_name):
         stdout_body = stderr_body = [Text("(none: map node)", GREY)]
     else:
-        stdout_reader, stderr_reader = _open_outputs(record.directory, node_run_name)
+        stdout_reader, stderr_reader = _open_outputs(record, node_run_name)
         stdout_body = _render_whole_output(
             stdout_reader, record.find_transcript_harness(node_run_name, raw)
         )
@@ -329,9 +332,7 @@ class _JournalRenderer:
             if event["event"] == "start" and "map" not in self.record.find_node_definition(
                 event["node"]
             ):
-                self.output_readers[event["node"]] = _open_outputs(
-                    self.record.directory, event["node"]
-                )
+                self.output_readers[event["node"]] = _open_outputs(self.record, event["node"])
         self.rendered_event_count = len(self.record.events)
         for node_run_name in self.output_readers:
             yield from self._render_output(node_run_name, include_partial)
@@ -397,12 +398,21 @@ class _JournalRenderer:
         return Text().append(_format_time_column(event["time"]), GREY).append_text(event_text)
 
 
-def _open_outputs(directory: Path, node_run_name: str) -> tuple[_LineReader, _LineReader]:
+def _open_outputs(record: _RunRecord, node_run_name: str) -> tuple[_LineReader, _LineReader]:
     """Return the readers of a node run's stdout and stderr."""
-    return (
-        _LineReader(build_output_path(directory, node_run_name, "stdout")),
-        _LineReader(build_output_path(directory, node_run_name, "stderr")),
+    return _open_output(record, node_run_name, "stdout"), _open_output(
+        record, node_run_name, "stderr"
     )
+
+
+def _open_output(record: _RunRecord, node_run_name: str, stream: str) -> _LineReader:
+    """Return the reader of one node run output file; a missing file is an error."""
+    output_path = build_output_path(record.directory, node_run_name, stream)
+    try:
+        return _LineReader(output_path)
+    except FileNotFoundError:
+        record.journal_reader.check_replaced()
+        raise RecordError(f"no output file {output_path}") from None
 
 
 def _format_time_column(journal_time: str) -> str:

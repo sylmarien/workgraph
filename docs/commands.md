@@ -38,6 +38,7 @@
   - `no run in <dir>`
   - `no node run of '<node>'`
   - `no node run '<node>#<n>'`
+  - `no output file <path>`
 
   `--follow` keeps the view current while the run writes. `show-node
   --follow` prints, in order:
@@ -67,8 +68,11 @@
   - `[<node run>] ` for a stdout line
   - `[<node run> stderr] ` for a stderr line
 
-  Agent stdout renders as a transcript unless `--raw`. Without a run:
-  `no run in <dir>` on stderr, exit 1.
+  Agent stdout renders as a transcript unless `--raw`. Each error prints its
+  message on stderr and exits 1:
+  - `no run in <dir>`
+  - `no output file <path>`, under `--with-nodes` when a node run output file
+    is gone
 
   `--follow` keeps the view current while the run writes. `show-journal
   --follow` prints, in order:
