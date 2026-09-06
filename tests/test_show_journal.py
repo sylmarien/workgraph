@@ -331,6 +331,16 @@ def test_with_nodes_prints_an_interrupted_node_run_output_before_the_resume_line
     )
 
 
+def test_with_nodes_reports_a_missing_output_file(
+    dev_project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_record(dev_project, IN_PROGRESS_EVENTS)
+    (dev_project / LOCK_FILE).touch()
+    (dev_project / RUN_DIR / "test#2.stdout").unlink()
+    assert main(["show-journal", "--with-nodes"]) == 1
+    assert capsys.readouterr().err == "no output file .workgraph/run/test#2.stdout\n"
+
+
 @pytest.mark.parametrize("journal_text", [None, ""])
 def test_no_run_is_an_error(
     project: Path, capsys: pytest.CaptureFixture[str], journal_text: str | None

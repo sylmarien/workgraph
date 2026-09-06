@@ -450,6 +450,17 @@ def test_missing_node_run_is_an_error(
     assert capsys.readouterr().err == message + "\n"
 
 
+@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+def test_a_missing_output_file_is_an_error(
+    recorded_project: Path, capsys: pytest.CaptureFixture[str], stream: str
+) -> None:
+    (recorded_project / RUN_DIR / f"test#2.{stream}").unlink()
+    assert main(["show-node", "test#2"]) == 1
+    output, error_output = capsys.readouterr()
+    assert error_output == f"no output file .workgraph/run/test#2.{stream}\n"
+    assert output == ""
+
+
 def test_no_run_is_an_error(project: Path, capsys: pytest.CaptureFixture[str]) -> None:
     elsewhere = project / "elsewhere"
     elsewhere.mkdir()

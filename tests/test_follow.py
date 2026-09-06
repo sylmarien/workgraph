@@ -28,7 +28,7 @@ from tests.test_show_node import (
 )
 from workgraph import show
 from workgraph.cli import main
-from workgraph.run import JOURNAL_FILE, LOCK_FILE, RUN_DIR, is_in_progress
+from workgraph.run import JOURNAL_FILE, LOCK_FILE, RUN_DIR, build_output_path, is_in_progress
 
 
 def append_events(project: Path, *events: dict[str, Any]) -> None:
@@ -159,6 +159,29 @@ def test_a_replaced_run_is_an_error(
     write_record(dev_project, AT_CHECKS_2_EVENTS)
     (dev_project / LOCK_FILE).touch()
     queue_actions(lambda: replace_record(dev_project))
+    assert main(argv) == 1
+    assert capsys.readouterr().err == "the run was replaced\n"
+
+
+@pytest.mark.parametrize(
+    "argv", [["show-journal", "--with-nodes", "--follow"], ["show-node", "test", "--follow"]]
+)
+def test_a_run_replaced_before_the_open_of_its_output_files_is_an_error(
+    dev_project: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+) -> None:
+    write_record(dev_project, AT_CHECKS_2_EVENTS)
+    (dev_project / LOCK_FILE).touch()
+
+    def wipe_then_build_output_path(directory: Path, node_run_name: str, stream: str) -> Path:
+        """Model a new run wiping the record between the read of test#2's start and the open."""
+        if node_run_name == "test#2":
+            shutil.rmtree(dev_project / RUN_DIR, ignore_errors=True)
+        return build_output_path(directory, node_run_name, stream)
+
+    monkeypatch.setattr(show, "build_output_path", wipe_then_build_output_path)
     assert main(argv) == 1
     assert capsys.readouterr().err == "the run was replaced\n"
 
