@@ -39,15 +39,24 @@ passed verbatim as one argument.
      user for a decision. When the review material is one line holding a
      GitHub issue link (`https://github.com/<owner>/<repo>/issues/<number>`)
      or issue comment link (the same with `#issuecomment-<id>`), it points at
-     an agent brief. Read the linked text with
+     an agent brief or an implementation plan. The heading of the linked
+     text identifies which one it is: `## Agent Brief` or
+     `## Implementation Plan`. Read the linked text with
      `gh api repos/<owner>/<repo>/issues/<number> --jq .body` for an issue
      link, and `gh api repos/<owner>/<repo>/issues/comments/<id> --jq .body`
-     for a comment link. Print the link, then a summary of the brief:
+     for a comment link. For a brief, print the link, then a summary of the
+     brief:
 
      - its `Summary` line;
      - its `Desired behavior` in two or three sentences;
      - the number of `Acceptance criteria` items;
      - every `Out of scope` item.
+
+     For a plan, print the link, then a summary of the plan:
+
+     - its `Goal` line;
+     - its `Approach` sentences;
+     - one line per task, holding the task's commit summary.
 
      The user may discuss the review material over several turns; never
      decide in their place. On accept, run
