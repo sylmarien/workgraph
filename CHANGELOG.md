@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.2.10 (2026-09-06)
+
+### Patch
+
+- Report missing node run output files instead of tracebacks
+  ([`b4c87ca`](https://github.com/sylmarien/workgraph/commit/b4c87ca49714a6f727232728e42c82911b0e12e6))
+
+
 ## v0.2.9 (2026-09-05)
 
 ### Patch
