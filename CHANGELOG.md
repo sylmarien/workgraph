@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.2.15 (2026-09-07)
+
+### Patch
+
+- Show resumed sessions and fallbacks in show-node, show-journal, and --graph
+  ([`c9005e5`](https://github.com/sylmarien/workgraph/commit/c9005e50963d10b82169cd2634b853e433991ce7))
+
+
 ## v0.2.14 (2026-09-07)
 
 ### Patch
