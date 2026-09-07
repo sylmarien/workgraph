@@ -252,7 +252,6 @@ def resume_run(
             f"the run is at or past its cost limit of {cost_limit:g} USD; pass --add-cost to resume"
         )
     if decision is not None:
-        print(f"{current_node}: {decision}", flush=True)
         resume_event.update(decision=decision, feedback=feedback)
         if decision == "reject":
             saved_handoff = state.get("handoff")
@@ -265,7 +264,7 @@ def resume_run(
     # The resume drops the stop it resumes from.
     state.update(stopped=None, reason=None)
     with _lock(directory):
-        _append_journal_event(directory, "resume", **resume_event)
+        _record_event(directory, current_node, decision, "resume", **resume_event)
         _run_nodes(workflow, state, directory, grace_entry=True, stop_node=current_node)
 
 
@@ -331,9 +330,14 @@ def _run_nodes(
     while current_node != END:
         node_definition = nodes[current_node]
         if "gate" in node_definition:
-            print(f"{current_node}: parked", flush=True)
             _stop_run(
-                state, directory, current_node, handoff, "gate", question=node_definition["gate"]
+                state,
+                directory,
+                current_node,
+                handoff,
+                "gate",
+                question=node_definition["gate"],
+                progress_word="parked",
             )
             print(format_review_material(handoff), flush=True)
             raise Park
@@ -368,16 +372,24 @@ def _run_nodes(
         spent_time = state["spent_time"]
         for limit_kind in ("hard", "soft"):
             if limit_kind in time_limits and spent_time >= time_limits[limit_kind]:
-                print(f"{current_node}: budget", flush=True)
                 error = BudgetStop(
                     f"node '{current_node}': {limit_kind} time limit of {time_limits[limit_kind]:g} s reached"
                 )
-                _stop_run(state, directory, current_node, handoff, "budget", error)
+                _stop_run(
+                    state,
+                    directory,
+                    current_node,
+                    handoff,
+                    "budget",
+                    error,
+                    progress_word="budget",
+                )
                 raise error
         if cost_limit is not None and state["spent_cost"] >= cost_limit:
-            print(f"{current_node}: budget", flush=True)
             error = BudgetStop(f"node '{current_node}': cost limit of {cost_limit:g} USD reached")
-            _stop_run(state, directory, current_node, handoff, "budget", error)
+            _stop_run(
+                state, directory, current_node, handoff, "budget", error, progress_word="budget"
+            )
             raise error
         if grace_entry:
             grace_entry = False
@@ -425,10 +437,10 @@ def _run_nodes(
         except NodeFailure as error:
             state["spent_time"] += time.monotonic() - started_monotonic
             state["spent_cost"] += error.cost
-            print(f"{current_node}: failure", flush=True)
             _end_node_run(
                 directory,
                 node_run_name,
+                "failure",
                 {"failure": str(error)},
                 None,
                 error.cost,
@@ -442,13 +454,13 @@ def _run_nodes(
         if "agent" in node_definition:
             # workgraph discards the handoff after delivering it to an agent.
             handoff = None
-        print(f"{current_node}: {result.outcome}", flush=True)
         if result.outcome == node_limits.get("reset"):
             visits.pop(current_node, None)
         target = node_definition["transitions"][result.outcome]
         _end_node_run(
             directory,
             node_run_name,
+            result.outcome,
             {"outcome": result.outcome},
             result.handoff,
             result.cost,
@@ -476,8 +488,9 @@ def _stop_run(
     stop_reason: str,
     error: Exception | None = None,
     question: str | None = None,
+    progress_word: str | None = None,
 ) -> None:
-    """Record the stop in the state and the journal, then print the stop line.
+    """Write the state, record the stop with its progress line, then print the stop line.
 
     node_name is the node the run stops at; a run that reaches END names the last node run's node.
     """
@@ -493,8 +506,21 @@ def _stop_run(
             stop_reason=stop_reason,
             error_message=error_message,
         )
-    _append_journal_event(directory, "stop", reason=stop_reason, node=node_name)
+    _record_event(directory, node_name, progress_word, "stop", reason=stop_reason, node=node_name)
     echo(format_stop_line(state, stop_reason, question))
+
+
+def _record_event(
+    directory: Path,
+    progress_node: str,
+    progress_word: str | None,
+    event_kind: str,
+    **fields: Any,
+) -> None:
+    """Print the event's progress line when it has one, then append the event to the journal."""
+    if progress_word is not None:
+        print(f"{progress_node}: {progress_word}", flush=True)
+    _append_journal_event(directory, event_kind, **fields)
 
 
 def _append_journal_event(directory: Path, event_kind: str, **fields: Any) -> None:
@@ -561,6 +587,7 @@ def _start_node_run(
 def _end_node_run(
     directory: Path,
     node_run_name: str,
+    progress_word: str,
     end_fields: dict[str, Any],
     handoff: str | None,
     cost: float,
@@ -569,21 +596,24 @@ def _end_node_run(
     target: str | None = None,
     map_name: str | None = None,
 ) -> None:
-    """Store the session the node run ended with, then journal its end.
+    """Store the session the node run ended with, then record its end with its progress line.
 
     end_fields holds the one key the event ends with: outcome or failure. A fanned-out end
     carries no spent amounts, and the event carries session only when the node run has one.
     """
+    node_name = parse_node_name(node_run_name)
     if session is not None:
         # A fan-out ends its node runs from several threads.
         with _STATE_LOCK:
-            state.setdefault("sessions", {})[parse_node_name(node_run_name)] = session
+            state.setdefault("sessions", {})[node_name] = session
             _save_state(state, directory)
     spent_amounts = (
         {} if map_name is not None else {key: state[key] for key in ("spent_time", "spent_cost")}
     )
-    _append_journal_event(
+    _record_event(
         directory,
+        node_name if map_name is None else f"{map_name}/{node_name}",
+        progress_word,
         "end",
         node=node_run_name,
         **end_fields,
@@ -699,10 +729,10 @@ def _run_map(
             # A fanned-out node's failure counts as not passing; the run continues.
             result = NodeRunResult("fail", None, error.cost, error.session)
             end_fields = {"failure": str(error)}
-        print(f"{map_name}/{fanned_out_node}: {result.outcome}", flush=True)
         _end_node_run(
             directory,
             fanned_out_run_name,
+            result.outcome,
             end_fields,
             result.handoff,
             result.cost,
