@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.3.1 (2026-09-07)
+
+### Patch
+
+- Consolidate event recording and progress output
+  ([`42d5446`](https://github.com/sylmarien/workgraph/commit/42d544646aaa8525aecd49232653c1ff9fccd82d))
+
+
 ## v0.3.0 (2026-09-07)
 
 ### Patch
