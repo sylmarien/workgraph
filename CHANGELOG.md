@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.2.14 (2026-09-07)
+
+### Patch
+
+- Add install and update skills to set up workgraph in the home directory
+  ([`77e4ed1`](https://github.com/sylmarien/workgraph/commit/77e4ed1881d2e1c5671664f86698a0935eb10335))
+
+
 ## v0.2.13 (2026-09-07)
 
 ### Patch
