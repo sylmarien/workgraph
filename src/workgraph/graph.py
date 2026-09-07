@@ -12,7 +12,7 @@ from rich.text import Text
 
 from workgraph import show
 from workgraph.run import GREY, format_duration, parse_node_name, read_state
-from workgraph.show import DECISION_STYLE, Event, _RunRecord
+from workgraph.show import DECISION_STYLE, Event, _RunRecord, format_resumed_suffix
 from workgraph.workflow import END
 
 # Seconds between two redraws under follow; the journal poll keeps show.POLL_INTERVAL.
@@ -22,6 +22,7 @@ PULSE_PERIOD = 2.0
 
 GLYPH_CURRENT = "◆"
 GLYPH_PAST = "◇"
+GLYPH_RESUMED = "↻"
 GLYPH_PASS = "✓"
 GLYPH_FAIL = "✗"
 GLYPH_GATE = "⬡"
@@ -39,6 +40,8 @@ class _NodeRun:
     end_time: datetime | None = None
     outcome: str | None = None
     cost: float = 0.0
+    resumed_session: bool = False
+    fell_back: bool = False
     fanned_out_runs: list["_NodeRun"] = field(default_factory=list)
 
 
@@ -105,6 +108,7 @@ def _build_chain(events: list[Event]) -> list[ChainEntry]:
                     node_run_name=event["node"],
                     node_name=parse_node_name(event["node"]),
                     start_time=datetime.fromisoformat(event["time"]),
+                    resumed_session=event.get("session") is not None,
                 )
                 if event.get("map"):
                     last_run_of_node[event["map"]].fanned_out_runs.append(node_run)
@@ -117,6 +121,8 @@ def _build_chain(events: list[Event]) -> list[ChainEntry]:
                 node_run.end_time = datetime.fromisoformat(event["time"])
                 node_run.outcome = "failure" if "failure" in event else event["outcome"]
                 node_run.cost = event["cost"]
+            case "fallback":
+                runs_by_name[event["node"]].fell_back = True
             case "limit" | "stop" | "resume":
                 chain.append(event)
     return chain
@@ -245,19 +251,32 @@ def _render_node_row(
     name_width: int = 0,
 ) -> Text:
     row = Text()
+    # A fallback ends the resumed spawn, so the fresh spawn draws the regular glyphs.
+    resumed_glyph = GLYPH_RESUMED if node_run.resumed_session and not node_run.fell_back else None
     if node_run.end_time is None:
-        row.append(GLYPH_CURRENT, "bold" if pulse is None else _pick_pulse_style(pulse))
+        row.append(
+            resumed_glyph or GLYPH_CURRENT,
+            "bold" if pulse is None else _pick_pulse_style(pulse),
+        )
         row.append(
             f" {node_run.node_run_name.ljust(name_width)}  {_format_node_run_duration(node_run, now)}",
             "bold",
         )
-        return row
+        return _append_resumed_suffix(record, row, node_run)
     style = _pick_outcome_style(record, node_run)
-    glyph = {"green": GLYPH_PASS, "red": GLYPH_FAIL}.get(style, GLYPH_PAST)
+    glyph = {"green": GLYPH_PASS, "red": GLYPH_FAIL}.get(style, resumed_glyph or GLYPH_PAST)
     row.append(f"{glyph} {node_run.node_run_name.ljust(name_width)}", style)
     row.append("  " + _format_node_run_duration(node_run, now), GREY)
     if "agent" in record.nodes[node_run.node_name]:
         row.append(f"  ${node_run.cost:.2f}", GREY)
+    return _append_resumed_suffix(record, row, node_run)
+
+
+def _append_resumed_suffix(record: _RunRecord, row: Text, node_run: _NodeRun) -> Text:
+    """Append the node run the row resumed the session of, then its fallback."""
+    row.append(format_resumed_suffix(record, node_run.node_run_name), GREY)
+    if node_run.fell_back:
+        row.append("  fallback", "yellow")
     return row
 
 
