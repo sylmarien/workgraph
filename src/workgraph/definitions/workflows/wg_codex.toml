@@ -1,0 +1,106 @@
+start = "design"
+
+[defaults]
+harness = "claude"
+model = "claude-fable-5-1"
+effort = "high"
+
+[nodes.design]
+agent = "wg_design"
+effort = "xhigh"
+outcomes = ["done"]
+
+[nodes.design.transitions]
+done = "approve-design"
+
+[nodes.approve-design]
+gate = "Plan from this design?"
+
+[nodes.approve-design.transitions]
+accept = "plan"
+reject = "design"
+
+[nodes.plan]
+agent = "wg_plan"
+effort = "xhigh"
+outcomes = ["done"]
+
+[nodes.plan.transitions]
+done = "approve-plan"
+
+[nodes.approve-plan]
+gate = "Implement this plan?"
+
+[nodes.approve-plan.transitions]
+accept = "implement"
+reject = "plan"
+
+[nodes.implement]
+agent = "wg_implement"
+harness = "codex"
+model = "gpt-5.6-sol"
+effort = "xhigh"
+sandbox = "danger-full-access"
+outcomes = ["done"]
+
+[nodes.implement.transitions]
+done = "test"
+
+[nodes.test]
+command = "sh -c 'uv run ruff check && uv run ruff format --check && uv run mypy && uv run pytest'"
+
+[nodes.test.limits]
+visits = 5
+reset = "pass"
+
+[nodes.test.transitions]
+pass = "review"
+fail = "implement"
+
+[nodes.review]
+map = ["code-review", "overengineering-review"]
+resolve = "all"
+
+[nodes.review.transitions]
+pass = "pr"
+fail = "review-loop"
+
+# Holds the review limit so the LIMIT diversion carries the review findings.
+[nodes.review-loop]
+command = "true"
+
+[nodes.review-loop.limits]
+visits = 2
+
+[nodes.review-loop.transitions]
+pass = "implement"
+fail = "implement"
+LIMIT = "summary"
+
+[nodes.code-review]
+agent = "wg_code-review"
+outcomes = ["pass", "fail"]
+
+[nodes.overengineering-review]
+agent = "wg_overengineering-review"
+outcomes = ["pass", "fail"]
+
+[nodes.summary]
+agent = "wg_summarize-review"
+harness = "codex"
+model = "gpt-5.6-sol"
+outcomes = ["done"]
+
+[nodes.summary.transitions]
+done = "pr"
+
+[nodes.pr]
+agent = "wg_pr"
+harness = "codex"
+model = "gpt-5.6-luna"
+effort = "max"
+sandbox = "danger-full-access"
+outcomes = ["done"]
+
+[nodes.pr.transitions]
+done = "END"

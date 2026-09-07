@@ -68,7 +68,7 @@ The `~/.workgraph` directory holding a user's own definitions. A definition ther
 _Avoid_: Global config, user install, home installation
 
 **Bundled definitions**:
-The `wg` workflow and the `wg_`-prefixed agent definitions the package ships. The CLI reads them from its own package directory. `uv` replaces them on upgrade.
+The workflow and agent definitions the package ships. The CLI reads them from its own package directory. `uv` replaces them on upgrade.
 _Avoid_: Default definitions
 
 **Harness**:

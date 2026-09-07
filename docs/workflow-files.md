@@ -4,8 +4,11 @@ A workflow lives in `.workgraph/workflows/<name>.toml`; the filename is the
 workflow name. `workgraph` searches the invocation directory, then the home
 directory, then the workflows bundled in the package, and takes the first
 match. A project workflow therefore shadows a personal one of the same name,
-and both shadow a bundled one. The bundled `wg` workflow is a full example
-with the four node kinds; the reference below uses two nodes.
+and both shadow a bundled one. The package bundles `wg`, which runs every
+agent node on Claude Code and requires `claude` on `PATH`, and `wg_codex`,
+which declares the same graph but runs `implement`, `summary`, and `pr` on
+Codex and requires `codex` on `PATH` as well. The bundled `wg` workflow is a
+full example with the four node kinds; the reference below uses two nodes.
 
 ```toml
 start = "implement"          # entry node, required
