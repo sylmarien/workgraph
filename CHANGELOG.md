@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.3.0 (2026-09-07)
+
+### Patch
+
+- Bundle the wg workflow and agents in the package [skip release]
+  ([`208290e`](https://github.com/sylmarien/workgraph/commit/208290e4f1ddc88cb51eb4cfddf53863b5ad84cb))
+
+
 ## v0.2.16 (2026-09-07)
 
 ### Patch
