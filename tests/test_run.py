@@ -511,6 +511,25 @@ def test_user_scope_agent_definition_is_found(project: Path, home: Path, fake_cl
     assert "home planner" in find_flag_value(argv, "--agents")
 
 
+def test_bundled_agent_definition_is_found(project: Path, home: Path, fake_claude: None) -> None:
+    write_workflow(project, "agents", AGENT_WORKFLOW.replace('"planner"', '"wg_plan"'))
+    queue_responses(project, build_outcome_response("done"))
+    assert main(["run", "agents", "input"]) == 0
+    [argv] = read_spawn_argv(project)
+    assert "wg_plan" in find_flag_value(argv, "--agents")
+
+
+def test_user_scope_agent_definition_shadows_bundled(
+    project: Path, home: Path, fake_claude: None
+) -> None:
+    write_workflow(project, "agents", AGENT_WORKFLOW.replace('"planner"', '"wg_plan"'))
+    write_agent(home, "wg_plan", "You are the home planner.")
+    queue_responses(project, build_outcome_response("done"))
+    assert main(["run", "agents", "input"]) == 0
+    [argv] = read_spawn_argv(project)
+    assert "home planner" in find_flag_value(argv, "--agents")
+
+
 def test_missing_agent_definition_stops_the_run(
     project: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

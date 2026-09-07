@@ -2,8 +2,9 @@
 
 An agent node references an agent definition by name: a file in the Claude
 Code subagent format at `.workgraph/agents/<name>.md` in the invocation
-directory or the home directory, in that order. Both harnesses read the same
-format. The file carries no workflow contract.
+directory or the home directory, or a `<name>.md` bundled in the package, in
+that order. The bundled agents carry the `wg_` prefix. Both harnesses read
+the same format. The file carries no workflow contract.
 
 ```markdown
 ---
@@ -42,5 +43,5 @@ The plugin ships this skill as `skills/workgraph/SKILL.md`. Without the
 plugin, copy that file to `~/.claude/skills/workgraph/SKILL.md` to start and
 follow runs from a Claude Code session.
 
-There are no per-workflow skills; for a `/dev` shorthand, write a personal
+There are no per-workflow skills; for a `/wg` shorthand, write a personal
 one-line skill that invokes this one with the workflow name filled in.

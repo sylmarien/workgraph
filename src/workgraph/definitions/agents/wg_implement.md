@@ -1,5 +1,5 @@
 ---
-name: implement
+name: wg_implement
 description: Implements a GitHub issue in the current repository.
 tools: Bash, Read, Edit, Write, Glob, Grep, Skill
 ---

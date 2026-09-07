@@ -1,5 +1,5 @@
 ---
-name: plan
+name: wg_plan
 description: Makes sure the change the run input names has an implementation plan.
 tools: Bash, Read, Glob, Grep
 ---

@@ -1,5 +1,5 @@
 ---
-name: overengineering-review
+name: wg_overengineering-review
 description: Reviews the branch's diff against the merge-base for over-engineering.
 tools: Bash, Read, Glob, Grep, Skill
 ---

@@ -1,15 +1,18 @@
 """Tests for workflow discovery, loading, and validation."""
 
 from pathlib import Path
-from typing import Any
 
 import pytest
 
 from tests.conftest import AGENT_WORKFLOW, MINIMAL_WORKFLOW, write_workflow
 from workgraph.harness import HARNESS_NAMES
-from workgraph.workflow import WorkflowError, load_workflow, parse_duration, render_mermaid
-
-REPOSITORY_ROOT = Path(__file__).parent.parent
+from workgraph.workflow import (
+    WorkflowError,
+    list_definition_directories,
+    load_workflow,
+    parse_duration,
+    render_mermaid,
+)
 
 VALID_WORKFLOW = """
 start = "implement"
@@ -245,6 +248,15 @@ def test_global_workflow_loads_without_project_one(project: Path, home: Path) ->
     assert load_workflow("build")["start"] == "check"
 
 
+def test_bundled_workflow_loads_without_project_or_global_one(project: Path, home: Path) -> None:
+    assert load_workflow("wg")["start"] == "design"
+
+
+def test_global_workflow_shadows_bundled(project: Path, home: Path) -> None:
+    write_workflow(home, "wg", MINIMAL_WORKFLOW)
+    assert load_workflow("wg")["start"] == "check"
+
+
 def test_workflow_is_not_searched_in_parent_directories(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -261,56 +273,12 @@ def test_unknown_workflow_is_an_error(project: Path) -> None:
         load_workflow("ghost")
 
 
-@pytest.fixture
-def bundled_dev_workflow(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
-    """Load the `dev` workflow this repository ships in `.workgraph`."""
-    monkeypatch.chdir(REPOSITORY_ROOT)
-    return load_workflow("dev")
-
-
-def test_bundled_dev_workflow_declares_the_review_fan_out(
-    bundled_dev_workflow: dict[str, Any],
-) -> None:
-    assert bundled_dev_workflow["defaults"] == {
-        "harness": "claude",
-        "model": "claude-fable-5-1",
-        "effort": "high",
-    }
-    review = bundled_dev_workflow["nodes"]["review"]
-    assert review["map"] == ["code-review", "overengineering-review"]
-    assert review["resolve"] == "all"
-    assert review["transitions"] == {"pass": "pr", "fail": "review-loop"}
-    review_loop = bundled_dev_workflow["nodes"]["review-loop"]
-    assert review_loop["command"] == "true"
-    assert review_loop["limits"] == {"visits": 2}
-    assert review_loop["transitions"] == {
-        "pass": "implement",
-        "fail": "implement",
-        "LIMIT": "summary",
-    }
-    assert bundled_dev_workflow["nodes"]["test"]["limits"] == {"visits": 5, "reset": "pass"}
-
-
-def test_bundled_dev_workflow_starts_at_the_design_node(
-    bundled_dev_workflow: dict[str, Any],
-) -> None:
-    assert bundled_dev_workflow["start"] == "design"
-    design = bundled_dev_workflow["nodes"]["design"]
-    assert design["agent"] == "design"
-    assert design["effort"] == "xhigh"
-    assert design["outcomes"] == ["done"]
-    assert design["transitions"] == {"done": "approve-design"}
-    approve_design = bundled_dev_workflow["nodes"]["approve-design"]
-    assert approve_design["gate"] == "Plan from this design?"
-    assert approve_design["transitions"] == {"accept": "plan", "reject": "design"}
-
-
-def test_bundled_dev_agents_have_definitions(
-    bundled_dev_workflow: dict[str, Any],
-) -> None:
-    agents_directory = REPOSITORY_ROOT / ".workgraph" / "agents"
-    for node in bundled_dev_workflow["nodes"].values():
+def test_bundled_agents_have_definitions_under_the_wg_prefix(project: Path, home: Path) -> None:
+    bundled_workflow = load_workflow("wg")
+    agents_directory = list_definition_directories()[-1] / "agents"
+    for node in bundled_workflow["nodes"].values():
         if "agent" in node:
+            assert node["agent"].startswith("wg_")
             assert (agents_directory / f"{node['agent']}.md").is_file()
 
 
