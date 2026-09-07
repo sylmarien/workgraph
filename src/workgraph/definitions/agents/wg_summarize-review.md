@@ -1,5 +1,5 @@
 ---
-name: summarize-review
+name: wg_summarize-review
 description: Summarizes the findings of the last review as not addressed.
 ---
 The prompt carries a handoff from `review` with the findings of the last

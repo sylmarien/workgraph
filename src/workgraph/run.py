@@ -18,7 +18,7 @@ from rich.console import Console
 from rich.text import Text
 
 from workgraph.harness import AgentInvocation, NodeFailure, find_harness
-from workgraph.workflow import END, LIMIT, resolve_agent_settings
+from workgraph.workflow import END, LIMIT, list_definition_directories, resolve_agent_settings
 
 RUN_DIR = Path(".workgraph") / "run"
 STATE_FILE = RUN_DIR / "state.json"
@@ -866,13 +866,13 @@ def _run_agent(
 
 
 def _load_agent_definition(agent_node_name: str, agent_name: str) -> dict[str, str]:
-    for base_directory in (Path.cwd(), Path.home()):
-        path = base_directory / ".workgraph" / "agents" / f"{agent_name}.md"
+    for definition_directory in list_definition_directories():
+        path = definition_directory / "agents" / f"{agent_name}.md"
         if path.is_file():
             return _parse_agent_definition(path.read_text())
     raise NodeFailure(
         f"node '{agent_node_name}': agent definition '{agent_name}' not found in .workgraph/agents"
-        " of the invocation directory or the home directory"
+        " of the invocation directory or the home directory, nor among the bundled agents"
     )
 
 

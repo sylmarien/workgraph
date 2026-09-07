@@ -1,5 +1,5 @@
 ---
-name: code-review
+name: wg_code-review
 description: Reviews the branch's diff against the merge-base for standards and spec.
 tools: Bash, Read, Glob, Grep, Skill, Task
 ---

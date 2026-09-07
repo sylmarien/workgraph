@@ -104,14 +104,23 @@ def render_mermaid(workflow: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def list_definition_directories() -> tuple[Path, Path, Path]:
+    """Return where definitions resolve from, in order: invocation directory, home, package."""
+    return (
+        Path.cwd() / ".workgraph",
+        Path.home() / ".workgraph",
+        Path(__file__).parent / "definitions",
+    )
+
+
 def _find_workflow_file(workflow_name: str) -> Path:
-    for base_directory in (Path.cwd(), Path.home()):
-        path = base_directory / ".workgraph" / "workflows" / f"{workflow_name}.toml"
+    for definition_directory in list_definition_directories():
+        path = definition_directory / "workflows" / f"{workflow_name}.toml"
         if path.is_file():
             return path
     raise WorkflowError(
         f"workflow '{workflow_name}' not found in a .workgraph/workflows directory of the"
-        " invocation directory or the home directory"
+        " invocation directory or the home directory, nor among the bundled workflows"
     )
 
 

@@ -1,5 +1,5 @@
 ---
-name: design
+name: wg_design
 description: Makes sure the change the run input names has an agent brief.
 tools: Bash, Read, Glob, Grep
 ---

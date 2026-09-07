@@ -1,5 +1,5 @@
 ---
-name: pr
+name: wg_pr
 description: Squashes the branch to one commit and creates or updates the pull request.
 tools: Bash, Read, Glob, Grep
 ---

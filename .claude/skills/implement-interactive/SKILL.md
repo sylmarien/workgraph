@@ -7,8 +7,7 @@ description: >
 disable-model-invocation: true
 ---
 Implement the work the user names, following the process below. This
-process is for interactive sessions; the `dev` workflow runs its own nodes
-for testing, review, and the PR.
+process is for interactive sessions.
 
 ## Starting point
 

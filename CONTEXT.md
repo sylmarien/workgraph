@@ -56,16 +56,20 @@ The specification of the agent an agent node runs, written in the harness's nati
 _Avoid_: Agent spec, agent config
 
 **Definition**:
-A workflow file or an agent definition, as the install and update skills handle them: one file under `workflows/` or `agents/`.
+A workflow file or an agent definition: one file under `workflows/` or `agents/`. It resolves from the invocation directory, then the home directory, then the bundled definitions.
 _Avoid_: Asset, resource, artifact
 
 **Plugin bundle**:
-One version of the workgraph plugin, as the harness's plugin manager cached it. It supplies the definitions the install and update skills place, and its version is reported apart from the CLI release.
+One version of the workgraph plugin, as the harness's plugin manager cached it. It supplies the skills; the CLI supplies the definitions.
 _Avoid_: Package, distribution, plugin copy
 
-**Home installation**:
-The `~/.workgraph` directory holding the installed definitions and the backups that install and update leave beside them. A backup is named `<stem>.backup-<sha256><extension>` after the bytes it preserves, and workgraph never overwrites or deletes one.
-_Avoid_: Global config, user install
+**Home definitions**:
+The `~/.workgraph` directory holding a user's own definitions. A definition there shadows a bundled one of the same name and yields to one in the invocation directory.
+_Avoid_: Global config, user install, home installation
+
+**Bundled definitions**:
+The `wg` workflow and the `wg_`-prefixed agent definitions the package ships. The CLI reads them from its own package directory. `uv` replaces them on upgrade.
+_Avoid_: Default definitions
 
 **Harness**:
 The runtime that executes an agent: `claude` (Claude Code) or `codex` (the Codex CLI), selected by the `harness` setting. Claude reports the cost of a node run; Codex reports token usage, from which workgraph estimates the cost.

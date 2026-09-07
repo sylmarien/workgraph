@@ -18,4 +18,3 @@ def test_plugins_ship_the_cli_version_and_share_skills() -> None:
         assert (skills_directory / "install" / "SKILL.md").is_file()
         assert (skills_directory / "update" / "SKILL.md").is_file()
         assert (skills_directory / "workgraph" / "SKILL.md").is_file()
-        assert (repository / "src" / "workgraph" / "setup.py").is_file()

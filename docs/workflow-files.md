@@ -2,10 +2,10 @@
 
 A workflow lives in `.workgraph/workflows/<name>.toml`; the filename is the
 workflow name. `workgraph` searches the invocation directory, then the home
-directory, and takes the first match. A project workflow therefore shadows a
-personal one of the same name. `.workgraph/workflows/dev.toml` in this
-repository is a full example with the four node kinds; the reference below
-uses two nodes.
+directory, then the workflows bundled in the package, and takes the first
+match. A project workflow therefore shadows a personal one of the same name,
+and both shadow a bundled one. The bundled `wg` workflow is a full example
+with the four node kinds; the reference below uses two nodes.
 
 ```toml
 start = "implement"          # entry node, required
