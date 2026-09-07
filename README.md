@@ -6,7 +6,9 @@ developer writes the workflow once and starts a run from a harness session
 with `/workgraph`. The run prints one progress line per node. One command
 resumes a stopped run.
 
-The CLI bundles the `wg` workflow, which this repository runs on itself:
+The CLI bundles workflow and agent definitions; [Workflow
+files](docs/workflow-files.md) lists them. This repository runs the bundled
+`wg` workflow on itself:
 
 ```mermaid
 flowchart TD
@@ -44,9 +46,9 @@ Installing the plugin adds the `/workgraph` skill. The plugin's `install`
 skill installs the CLI with `uv`, and its `update` skill upgrades it. Both
 check that `uv` is on `PATH` and install nothing else.
 
-The CLI bundles the `wg` workflow and its `wg_`-prefixed agent definitions.
-A user's own definitions shadow them; see
-[Workflow files](docs/workflow-files.md) for the resolution order.
+The CLI bundles workflow and agent definitions. A user's own definitions
+shadow them; see [Workflow files](docs/workflow-files.md) for the bundled
+definitions and the resolution order.
 
 As a Codex plugin:
 
@@ -55,10 +57,10 @@ codex plugin marketplace add sylmarien/workgraph
 codex plugin add workgraph@workgraph
 ```
 
-Start a new Codex session and invoke `$workgraph wg "#<issue>"`. The plugin
-shares the install, update, and run skills with the Claude Code plugin. The
-`wg` workflow defaults to the Claude harness, so it requires `claude` and
-`uv` on `PATH` in Codex too.
+Start a new Codex session and invoke `$workgraph <workflow> "#<issue>"`.
+The plugin shares the install, update, and run skills with the Claude Code
+plugin. The bundled workflows run nodes on the Claude harness, so they
+require `claude` and `uv` on `PATH` in Codex too.
 
 Codex reads the repository's existing marketplace at
 `.claude-plugin/marketplace.json` and its manifest at

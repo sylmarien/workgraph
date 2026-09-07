@@ -248,8 +248,11 @@ def test_global_workflow_loads_without_project_one(project: Path, home: Path) ->
     assert load_workflow("build")["start"] == "check"
 
 
-def test_bundled_workflow_loads_without_project_or_global_one(project: Path, home: Path) -> None:
-    assert load_workflow("wg")["start"] == "design"
+@pytest.mark.parametrize("workflow_name", ["wg", "wg_codex"])
+def test_bundled_workflow_loads_without_project_or_global_one(
+    project: Path, home: Path, workflow_name: str
+) -> None:
+    assert load_workflow(workflow_name)["start"] == "design"
 
 
 def test_global_workflow_shadows_bundled(project: Path, home: Path) -> None:
@@ -273,8 +276,11 @@ def test_unknown_workflow_is_an_error(project: Path) -> None:
         load_workflow("ghost")
 
 
-def test_bundled_agents_have_definitions_under_the_wg_prefix(project: Path, home: Path) -> None:
-    bundled_workflow = load_workflow("wg")
+@pytest.mark.parametrize("workflow_name", ["wg", "wg_codex"])
+def test_bundled_agents_have_definitions_under_the_wg_prefix(
+    project: Path, home: Path, workflow_name: str
+) -> None:
+    bundled_workflow = load_workflow(workflow_name)
     agents_directory = list_definition_directories()[-1] / "agents"
     for node in bundled_workflow["nodes"].values():
         if "agent" in node:
