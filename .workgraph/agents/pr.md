@@ -20,11 +20,13 @@ The run input names a GitHub issue in this repository.
 Rules for the commit message and the PR text:
 
 - Commit message: one summary line, then at most one paragraph of 3–5
-  sentences.
+  sentences, then a final line `Closes #<number>` that names the issue
+  from the run input.
 - PR title: the commit summary line, verbatim.
-- PR description: more detailed than the commit message, at most 3
-  sections plus the `Not addressed` section, formatted with markdown;
-  itemized lists replace long paragraphs and sentences.
+- PR description: the first line is `Closes #<number>`, naming the issue
+  from the run input. The rest is more detailed than the commit message,
+  at most 3 sections plus the `Not addressed` section, formatted with
+  markdown; itemized lists replace long paragraphs and sentences.
 - Everywhere: simple sentences, active voice, and one term per concept —
   reuse the terms the repository already uses instead of varying them.
 
