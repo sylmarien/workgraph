@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.2.13 (2026-09-07)
+
+### Patch
+
+- Define spawn in the glossary
+  ([`51b409a`](https://github.com/sylmarien/workgraph/commit/51b409a717f699b27b7539b06a9e2ddcf69e1031))
+
+
 ## v0.2.12 (2026-09-06)
 
 ### Patch
