@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.3.2 (2026-09-07)
+
+### Patch
+
+- Add a wg_codex workflow that runs implement, summary, and pr on Codex
+  ([`359ecf2`](https://github.com/sylmarien/workgraph/commit/359ecf2fdf87cf6bb0dbc82d6d4c303f5a0698af))
+
+
 ## v0.3.1 (2026-09-07)
 
 ### Patch
