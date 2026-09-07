@@ -33,6 +33,7 @@ PARKED_EVENTS = [
         handoff=PLAN_HANDOFF,
         target="checks",
         cost=0.4213,
+        session="plan-1",
         spent_time=30,
         spent_cost=0.4213,
     ),
@@ -375,6 +376,28 @@ def test_colors_on_a_terminal(
     assert "plan#1: done → checks\x1b[38;5;248m  30s" in output
 
 
+# The plan#2 node run resumed the session of plan#1 and ended with it.
+RESUMED_EVENTS = [
+    *PARKED_EVENTS[:9],
+    build_start_event("plan#2", 91, session="plan-1"),
+    build_end_event(
+        "plan#2",
+        100,
+        outcome="done",
+        target="checks",
+        cost=0.1,
+        session="plan-1",
+        spent_time=99,
+        spent_cost=1.0213,
+    ),
+    *PARKED_EVENTS[11:],
+]
+# The plan#2 node run resumed a session no end event carries.
+UNMATCHED_SESSION_EVENTS = [
+    *PARKED_EVENTS[:9],
+    build_start_event("plan#2", 91, session="lost-1"),
+    *PARKED_EVENTS[10:],
+]
 # The plan#2 node run resumed the session of plan#1, then fell back to a fresh spawn.
 FALLBACK_EVENTS = [
     *PARKED_EVENTS[:9],
@@ -392,6 +415,25 @@ FALLBACK_EVENTS = [
     ),
     *PARKED_EVENTS[11:],
 ]
+
+
+@pytest.mark.parametrize(
+    ("events", "start_line"),
+    [
+        # plan#2 ends with the session it resumed; the line still names the earlier node run.
+        (RESUMED_EVENTS, "plan#2: started  resumed plan#1"),
+        (UNMATCHED_SESSION_EVENTS, "plan#2: started  resumed lost-1"),
+    ],
+)
+def test_a_resumed_node_run_names_its_predecessor_on_its_start_line(
+    dev_project: Path,
+    capsys: pytest.CaptureFixture[str],
+    events: list[dict[str, Any]],
+    start_line: str,
+) -> None:
+    write_record(dev_project, events)
+    assert main(["show-journal"]) == 0
+    assert f"\n2026-08-31T12:01:31+02:00  {start_line}\n" in capsys.readouterr().out
 
 
 def test_sessions_and_a_fallback_leave_the_status_unchanged(
@@ -415,14 +457,22 @@ def test_a_fallback_prints_its_line_between_the_start_and_the_end(
     write_record(dev_project, FALLBACK_EVENTS)
     assert main(["show-journal"]) == 0
     assert (
-        "plan#2: started\x1b[0m\n"
+        "plan#2: started  resumed plan#1\x1b[0m\n"
         "\x1b[38;5;248m2026-08-31T12:01:35+02:00  \x1b[0m"
         "\x1b[33mplan#2: FALLBACK → fresh spawn\x1b[0m\x1b[38;5;248m  boom\x1b[0m\n"
         "\x1b[38;5;248m2026-08-31T12:01:40+02:00  \x1b[0mplan#2: done → checks"
     ) in capsys.readouterr().out
 
 
-def test_with_nodes_prints_the_fresh_output_of_a_node_run_that_fell_back(
+FALLBACK_WITH_NODES_LINES = """[plan#2] Resuming.
+[plan#2 stderr] resumed warn
+[workgraph#] 2026-08-31T12:01:35+02:00  plan#2: FALLBACK → fresh spawn  boom
+[plan#2] Starting over.
+[workgraph#] 2026-08-31T12:01:40+02:00  plan#2: done → checks  9s  $0.10
+"""
+
+
+def test_with_nodes_prints_both_spawns_output_around_the_fallback_marker(
     dev_project: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     write_record(
@@ -430,10 +480,9 @@ def test_with_nodes_prints_the_fresh_output_of_a_node_run_that_fell_back(
         FALLBACK_EVENTS,
         {
             "plan#2.resume.stdout": build_assistant_event(build_text_block("Resuming.")) + "\n",
+            "plan#2.resume.stderr": "resumed warn\n",
             "plan#2.stdout": build_assistant_event(build_text_block("Starting over.")) + "\n",
         },
     )
     assert main(["show-journal", "--with-nodes"]) == 0
-    assert [
-        line for line in capsys.readouterr().out.splitlines() if line.startswith("[plan#2]")
-    ] == ["[plan#2] Starting over."]
+    assert FALLBACK_WITH_NODES_LINES in capsys.readouterr().out

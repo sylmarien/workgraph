@@ -54,10 +54,6 @@ class _LineReader:
         self.file = path.open("rb")
         self.partial_line = b""
 
-    def has_moved_aside(self) -> bool:
-        """Return whether the path now names a different file than the open one, as a rename does."""
-        return os.stat(self.path).st_ino != os.fstat(self.file.fileno()).st_ino
-
     def check_replaced(self) -> None:
         """Raise when the file was unlinked or shrank: it belongs to a replaced run."""
         file_stat = os.fstat(self.file.fileno())
@@ -93,6 +89,7 @@ class _RunRecord:
         self.events: list[Event] = []
         self.start_events: dict[str, Event] = {}
         self.end_events: dict[str, Event] = {}
+        self.fallback_events: dict[str, Event] = {}
         self.read_events()
         if not self.events:
             raise no_run_error
@@ -115,6 +112,8 @@ class _RunRecord:
                     self.start_events[event["node"]] = event
                 elif event["event"] == "end":
                     self.end_events[event["node"]] = event
+                elif event["event"] == "fallback":
+                    self.fallback_events[event["node"]] = event
             self.events += new_events
             if self.in_progress or not new_events:
                 return
@@ -129,6 +128,23 @@ class _RunRecord:
         """Raise when the run exited without writing its stop event."""
         if not self.in_progress and not self.stop_event:
             raise RecordError("the run stopped without a stop event")
+
+    def find_predecessor_name(self, node_run_name: str) -> str | None:
+        """Return the node run whose end carried the agent session this node run resumed.
+
+        Return the session identifier when no earlier end carries it, and None when the
+        node run resumed no session.
+        """
+        start_event = self.start_events[node_run_name]
+        session = start_event.get("session")
+        if session is None:
+            return None
+        predecessor_names = [
+            event["node"]
+            for event in self.events[: self.events.index(start_event)]
+            if event["event"] == "end" and event.get("session") == session
+        ]
+        return predecessor_names[-1] if predecessor_names else str(session)
 
     def find_node_definition(self, node_run_name: str) -> dict[str, Any]:
         return self.nodes[parse_node_name(node_run_name)]
@@ -172,7 +188,7 @@ def follow_node(directory: Path, node_run_identifier: str, raw: bool) -> Iterato
         yield from _render_node_run(record, node_run_name, raw)
         return
     start_event = record.start_events[node_run_name]
-    yield from _render_header(start_event)
+    yield from _render_header(record, node_run_name)
     yield Text()
     yield from _render_section(
         "input", _render_input(record.events[0]["input"], start_event["handoff"])
@@ -181,21 +197,28 @@ def follow_node(directory: Path, node_run_identifier: str, raw: bool) -> Iterato
     output_readers = (
         None
         if "map" in record.find_node_definition(node_run_name)
-        else _open_outputs(record, node_run_name)
+        else _open_outputs(
+            record, node_run_name, resumed_spawn=node_run_name in record.fallback_events
+        )
     )
     if output_readers is None:
         yield Text("(none: map node)", GREY)
     transcript_harness = record.find_transcript_harness(node_run_name, raw)
+    markers_rendered = False
     while True:
+        fallback_event = record.fallback_events.get(node_run_name)
+        if output_readers is not None and fallback_event is not None and not markers_rendered:
+            yield from _render_new_output(output_readers, transcript_harness, True)
+            yield _render_fallback_text(fallback_event, with_error=True)
+            yield StderrLine(_render_fallback_text(fallback_event, with_error=False).plain + "\n")
+            output_readers = _open_outputs(record, node_run_name)
+            markers_rendered = True
         output_complete = node_run_name in record.end_events or record.stop_event is not None
         if output_readers is not None:
             yield from _render_new_output(output_readers, transcript_harness, output_complete)
         if output_complete:
             break
         record.poll()
-        if output_readers is not None and output_readers[0].has_moved_aside():
-            yield from _render_new_output(output_readers, transcript_harness, True)
-            output_readers = _open_outputs(record, node_run_name)
     now = record.now
     yield Text()
     yield from _render_status(record, node_run_name, now)
@@ -223,13 +246,12 @@ def _render_node_run(record: _RunRecord, node_run_name: str, raw: bool) -> list[
     if "map" in record.find_node_definition(node_run_name):
         stdout_body = stderr_body = [Text("(none: map node)", GREY)]
     else:
-        stdout_reader, stderr_reader = _open_outputs(record, node_run_name)
-        stdout_body = _render_whole_output(
-            stdout_reader, record.find_transcript_harness(node_run_name, raw)
+        stdout_body = _render_stream_body(
+            record, node_run_name, "stdout", record.find_transcript_harness(node_run_name, raw)
         )
-        stderr_body = _render_whole_output(stderr_reader, None)
+        stderr_body = _render_stream_body(record, node_run_name, "stderr", None)
     return [
-        *_render_header(start_event),
+        *_render_header(record, node_run_name),
         *_render_status(record, node_run_name, now),
         Text(),
         *_render_section("input", _render_input(record.events[0]["input"], start_event["handoff"])),
@@ -239,34 +261,77 @@ def _render_node_run(record: _RunRecord, node_run_name: str, raw: bool) -> list[
     ]
 
 
-def _render_header(start_event: Event) -> list[Text]:
-    """Render the node run name and its start time."""
+def _render_header(record: _RunRecord, node_run_name: str) -> list[Text]:
+    """Render the node run name, its start time, and the node run it resumed the session of."""
+    start_event = record.start_events[node_run_name]
+    resumed_suffix = format_resumed_suffix(record, node_run_name)
     return [
         Text(_format_display_name(start_event), "bold"),
-        Text(f"started  {_format_local_time(start_event['time'])}", GREY),
+        Text(f"started  {_format_local_time(start_event['time'])}{resumed_suffix}", GREY),
     ]
 
 
+def format_resumed_suffix(record: _RunRecord, node_run_name: str) -> str:
+    """Return `  resumed <predecessor>`; empty when the node run resumed no session."""
+    predecessor_name = record.find_predecessor_name(node_run_name)
+    return f"  resumed {predecessor_name}" if predecessor_name else ""
+
+
 def _render_status(record: _RunRecord, node_run_name: str, now: datetime | None) -> list[Text]:
-    """Render the end time, duration, and cost; `running…` or `interrupted` without an end."""
+    """Render the fallback, the end time, duration, cost, and session.
+
+    Without an end: `running…`, or `interrupted` in a run that holds no lock.
+    """
     start_event, end_event = (
         record.start_events[node_run_name],
         record.end_events.get(node_run_name),
     )
+    status_lines = []
+    fallback_event = record.fallback_events.get(node_run_name)
+    if fallback_event is not None:
+        fallback_time = _format_local_time(fallback_event["time"])
+        status_lines.append(Text(f"fallback {fallback_time}  {fallback_event['error']}", GREY))
     if end_event is None:
         status_text = (
             "interrupted" if now is None else f"running  {_format_elapsed(start_event, now)}…"
         )
-        return [Text(status_text, GREY)]
+        return [*status_lines, Text(status_text, GREY)]
     cost_line = f"cost     ${end_event['cost']:.2f}"
     if "spent_cost" in end_event:
         cost_line += f"  spent ${end_event['spent_cost']:.2f}"
-    return [
+    status_lines += [
         Text(
             f"ended    {_format_local_time(end_event['time'])}  {_format_event_duration(start_event, end_event)}",
             GREY,
         ),
         Text(cost_line, GREY),
+    ]
+    if "session" in end_event:
+        status_lines.append(Text(f"session  {end_event['session']}", GREY))
+    return status_lines
+
+
+def _render_stream_body(
+    record: _RunRecord, node_run_name: str, stream: str, transcript_harness: Harness | None
+) -> Sequence[Line]:
+    """Return one stream of a node run whole; after a fallback, both spawns around the marker.
+
+    An empty file renders as `(empty)`; after a fallback, a spawn that wrote nothing renders
+    as no line at all.
+    """
+    output_lines = _open_output(record, node_run_name, stream).read_lines(include_partial=True)
+    fallback_event = record.fallback_events.get(node_run_name)
+    if fallback_event is None:
+        if not output_lines:
+            return [Text("(empty)", GREY)]
+        return _render_output_lines(output_lines, transcript_harness)
+    resumed_lines = _open_output(record, node_run_name, stream, resumed_spawn=True).read_lines(
+        include_partial=True
+    )
+    return [
+        *_render_output_lines(resumed_lines, transcript_harness),
+        _render_fallback_text(fallback_event, with_error=stream == "stdout"),
+        *_render_output_lines(output_lines, transcript_harness),
     ]
 
 
@@ -328,7 +393,7 @@ class _JournalRenderer:
         The remaining output of a node run, a trailing partial line included, precedes its
         end line, or the resume or stop line that follows its interruption. With include_partial,
         a trailing partial line of a node run in progress renders as a line. The resumed
-        spawn's remaining output precedes the fallback line.
+        spawn's remaining output precedes the fallback marker.
         """
         for event in self.record.events[self.rendered_event_count :]:
             if not self.with_nodes:
@@ -340,40 +405,47 @@ class _JournalRenderer:
                 case "resume" | "stop":
                     closing_node_runs = list(self.output_readers)
                 case "fallback":
-                    yield from self._reopen_after_fallback(event["node"])
+                    yield from self._render_resumed_spawn_after_fallback(event["node"])
                     closing_node_runs = []
                 case _:
                     closing_node_runs = []
             for node_run_name in closing_node_runs:
                 if node_run_name in self.output_readers:
-                    yield from self._render_output(node_run_name, include_partial=True)
+                    yield from self._render_output(
+                        node_run_name, self.output_readers[node_run_name], include_partial=True
+                    )
                     del self.output_readers[node_run_name]
             yield _render_origin(WORKGRAPH_ORIGIN).append_text(self._render_row(event))
             if event["event"] == "start" and "map" not in self.record.find_node_definition(
                 event["node"]
             ):
-                self.output_readers[event["node"]] = _open_outputs(self.record, event["node"])
+                self.output_readers[event["node"]] = _open_outputs(
+                    self.record,
+                    event["node"],
+                    resumed_spawn=event["node"] in self.record.fallback_events,
+                )
         self.rendered_event_count = len(self.record.events)
-        for node_run_name in self.output_readers:
-            yield from self._render_output(node_run_name, include_partial)
+        for node_run_name, output_readers in self.output_readers.items():
+            yield from self._render_output(node_run_name, output_readers, include_partial)
 
-    def _reopen_after_fallback(self, node_run_name: str) -> Iterator[Text]:
-        """Render the resumed spawn's remaining output, then reopen the plain files.
-
-        A renderer that opened the files after the fallback finds them in place and renders
-        nothing.
-        """
-        if not self.output_readers[node_run_name][0].has_moved_aside():
-            return
-        yield from self._render_output(node_run_name, include_partial=True)
+    def _render_resumed_spawn_after_fallback(self, node_run_name: str) -> Iterator[Text]:
+        """Render the resumed spawn's remaining output, then hold the fresh spawn's files."""
+        yield from self._render_output(
+            node_run_name, self.output_readers[node_run_name], include_partial=True
+        )
         self.output_readers[node_run_name] = _open_outputs(self.record, node_run_name)
 
-    def _render_output(self, node_run_name: str, include_partial: bool) -> Iterator[Text]:
+    def _render_output(
+        self,
+        node_run_name: str,
+        output_readers: tuple[_LineReader, _LineReader],
+        include_partial: bool,
+    ) -> Iterator[Text]:
         """Render the new lines of a node run's output: stdout, then stderr, each with its origin.
 
         With include_partial, a trailing partial line renders as a line.
         """
-        stdout_reader, stderr_reader = self.output_readers[node_run_name]
+        stdout_reader, stderr_reader = output_readers
         origin = _format_display_name(self.record.start_events[node_run_name])
         stdout_lines = stdout_reader.read_lines(include_partial)
         transcript_harness = self.record.find_transcript_harness(node_run_name, self.raw)
@@ -393,7 +465,8 @@ class _JournalRenderer:
             case "run":
                 event_text = Text(f'run: {event["workflow"]} "{event["input"]}"')
             case "start":
-                event_text = Text(f"{_format_display_name(event)}: started", GREY)
+                resumed_suffix = format_resumed_suffix(record, event["node"])
+                event_text = Text(f"{_format_display_name(event)}: started{resumed_suffix}", GREY)
             case "end":
                 # A fanned-out end carries no spent amounts.
                 self.spent_amounts = {
@@ -410,8 +483,9 @@ class _JournalRenderer:
             case "limit":
                 event_text = Text(f"{event['node']}: LIMIT → {event['target']}", "yellow")
             case "fallback":
-                event_text = Text(f"{event['node']}: FALLBACK → fresh spawn", "yellow")
-                event_text.append(f"  {event['error']}", GREY)
+                event_text = _render_fallback_text(
+                    event, with_error=True, prefix=f"{event['node']}: "
+                )
             case "resume":
                 if event.get("decision"):
                     event_text = Text(
@@ -432,16 +506,23 @@ class _JournalRenderer:
         return Text().append(_format_time_column(event["time"]), GREY).append_text(event_text)
 
 
-def _open_outputs(record: _RunRecord, node_run_name: str) -> tuple[_LineReader, _LineReader]:
-    """Return the readers of a node run's stdout and stderr."""
-    return _open_output(record, node_run_name, "stdout"), _open_output(
-        record, node_run_name, "stderr"
+def _open_outputs(
+    record: _RunRecord, node_run_name: str, resumed_spawn: bool = False
+) -> tuple[_LineReader, _LineReader]:
+    """Return the readers of a node run's stdout and stderr, or of its resumed spawn's."""
+    return (
+        _open_output(record, node_run_name, "stdout", resumed_spawn),
+        _open_output(record, node_run_name, "stderr", resumed_spawn),
     )
 
 
-def _open_output(record: _RunRecord, node_run_name: str, stream: str) -> _LineReader:
+def _open_output(
+    record: _RunRecord, node_run_name: str, stream: str, resumed_spawn: bool = False
+) -> _LineReader:
     """Return the reader of one node run output file; a missing file is an error."""
-    output_path = build_output_path(record.directory, node_run_name, stream)
+    output_path = build_output_path(
+        record.directory, node_run_name, f"resume.{stream}" if resumed_spawn else stream
+    )
     try:
         return _LineReader(output_path)
     except FileNotFoundError:
@@ -527,16 +608,6 @@ def _render_input(run_input: str, handoff: dict[str, str] | None) -> list[Line]:
     return lines
 
 
-def _render_whole_output(
-    output_reader: _LineReader, transcript_harness: Harness | None
-) -> Sequence[Line]:
-    """Return the whole node run output for show-node; `(empty)` for an empty file."""
-    output_lines = output_reader.read_lines(include_partial=True)
-    if not output_lines:
-        return [Text("(empty)", GREY)]
-    return _render_output_lines(output_lines, transcript_harness)
-
-
 def _render_output_lines(
     lines: Sequence[str], transcript_harness: Harness | None
 ) -> Sequence[Line]:
@@ -583,6 +654,14 @@ def _render_outcome_text(record: _RunRecord, node_run_name: str, now: datetime |
         else f"running {_format_elapsed(record.start_events[node_run_name], now)}…",
         "bold",
     )
+
+
+def _render_fallback_text(fallback_event: Event, with_error: bool, prefix: str = "") -> Text:
+    """Render the fallback marker; with_error appends the resumed spawn's error."""
+    fallback_text = Text(f"{prefix}FALLBACK → fresh spawn", "yellow")
+    if with_error:
+        fallback_text.append(f"  {fallback_event['error']}", GREY)
+    return fallback_text
 
 
 def _render_end_text(record: _RunRecord, node_run_name: str) -> Text:

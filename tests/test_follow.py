@@ -14,6 +14,7 @@ import pytest
 from tests.test_show_journal import (
     AT_PLAN_2_EVENTS,
     ENDED_EVENTS,
+    FALLBACK_WITH_NODES_LINES,
     IN_PROGRESS_EVENTS,
     JOURNAL_ENDED_OUTPUT,
     PARKED_EVENTS,
@@ -409,6 +410,7 @@ def queue_fallback_actions(project: Path, queue_actions: Callable[..., None]) ->
         lambda: append_output(
             project, "plan#2.stdout", build_assistant_event(build_text_block("Resuming.")) + "\n"
         ),
+        lambda: append_output(project, "plan#2.stderr", "resumed warn\n"),
         lambda: fall_back(project),
         lambda: append_output(
             project,
@@ -419,30 +421,106 @@ def queue_fallback_actions(project: Path, queue_actions: Callable[..., None]) ->
     )
 
 
-def test_show_node_follow_prints_the_fresh_output_after_a_fallback(
+FOLLOWED_FALLBACK_OUTPUT = """plan#2
+started  2026-08-31T12:01:31+02:00  resumed plan#1
+
+── input ──
+issue #5
+
+── stdout ──
+Resuming.
+FALLBACK → fresh spawn  boom
+Starting over.
+
+fallback 2026-08-31T12:01:35+02:00  boom
+ended    2026-08-31T12:01:40+02:00  9s
+cost     $0.10  spent $1.02
+session  plan-2
+
+── outcome ──
+done → checks
+
+── handoff ──
+(none)
+
+"""
+FOLLOWED_FALLBACK_STDERR = "resumed warn\nFALLBACK → fresh spawn\n"
+
+
+def test_show_node_follow_attached_before_a_fallback_prints_both_spawns_and_the_markers(
     dev_project: Path, capsys: pytest.CaptureFixture[str], queue_actions: Callable[..., None]
 ) -> None:
     write_record(dev_project, RESUMED_PLAN_2_EVENTS)
     (dev_project / LOCK_FILE).touch()
     queue_fallback_actions(dev_project, queue_actions)
     assert main(["show-node", "plan#2", "--follow"]) == 0
-    assert (
-        "── stdout ──\nResuming.\nStarting over.\n\n"
-        "ended    2026-08-31T12:01:40+02:00  9s\ncost     $0.10  spent $1.02\n\n"
-        "── outcome ──\ndone → checks\n" in capsys.readouterr().out
+    assert capsys.readouterr() == (FOLLOWED_FALLBACK_OUTPUT, FOLLOWED_FALLBACK_STDERR)
+
+
+def write_record_after_the_fallback(project: Path) -> None:
+    """Write the record of a node run whose fresh spawn has not written yet."""
+    write_record(
+        project,
+        [*RESUMED_PLAN_2_EVENTS, build_event("fallback", 95, node="plan#2", error="boom")],
+        {
+            "plan#2.resume.stdout": build_assistant_event(build_text_block("Resuming.")) + "\n",
+            "plan#2.resume.stderr": "resumed warn\n",
+        },
+    )
+    (project / LOCK_FILE).touch()
+
+
+def queue_fresh_spawn_actions(project: Path, queue_actions: Callable[..., None]) -> None:
+    """Queue the fresh spawn's output and the events that end the node run."""
+    queue_actions(
+        lambda: append_output(
+            project,
+            "plan#2.stdout",
+            build_assistant_event(build_text_block("Starting over.")) + "\n",
+        ),
+        lambda: append_events(project, *PLAN_2_ENDED_AFTER_FALLBACK_EVENTS),
     )
 
 
-def test_with_nodes_follow_prints_the_fresh_output_after_a_fallback(
+def test_show_node_follow_attached_after_a_fallback_prints_the_same_output(
+    dev_project: Path, capsys: pytest.CaptureFixture[str], queue_actions: Callable[..., None]
+) -> None:
+    write_record_after_the_fallback(dev_project)
+    queue_fresh_spawn_actions(dev_project, queue_actions)
+    assert main(["show-node", "plan#2", "--follow"]) == 0
+    assert capsys.readouterr() == (FOLLOWED_FALLBACK_OUTPUT, FOLLOWED_FALLBACK_STDERR)
+
+
+def test_show_node_follow_on_an_ended_node_run_that_fell_back_prints_the_same_output(
+    dev_project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_record_after_the_fallback(dev_project)
+    append_output(
+        dev_project,
+        "plan#2.stdout",
+        build_assistant_event(build_text_block("Starting over.")) + "\n",
+        *PLAN_2_ENDED_AFTER_FALLBACK_EVENTS,
+    )
+    assert main(["show-node", "plan#2", "--follow"]) == 0
+    followed_output = capsys.readouterr()
+    assert main(["show-node", "plan#2"]) == 0
+    assert followed_output == capsys.readouterr()
+
+
+def test_with_nodes_follow_attached_before_a_fallback_prints_both_spawns_output(
     dev_project: Path, capsys: pytest.CaptureFixture[str], queue_actions: Callable[..., None]
 ) -> None:
     write_record(dev_project, RESUMED_PLAN_2_EVENTS)
     (dev_project / LOCK_FILE).touch()
     queue_fallback_actions(dev_project, queue_actions)
     assert main(["show-journal", "--with-nodes", "--follow"]) == 0
-    output = capsys.readouterr().out
-    assert (
-        "[plan#2] Resuming.\n"
-        "[workgraph#] 2026-08-31T12:01:35+02:00  plan#2: FALLBACK → fresh spawn  boom\n"
-        "[plan#2] Starting over.\n[workgraph#] "
-    ) in output
+    assert FALLBACK_WITH_NODES_LINES in capsys.readouterr().out
+
+
+def test_with_nodes_follow_attached_after_a_fallback_prints_the_same_lines(
+    dev_project: Path, capsys: pytest.CaptureFixture[str], queue_actions: Callable[..., None]
+) -> None:
+    write_record_after_the_fallback(dev_project)
+    queue_fresh_spawn_actions(dev_project, queue_actions)
+    assert main(["show-journal", "--with-nodes", "--follow"]) == 0
+    assert FALLBACK_WITH_NODES_LINES in capsys.readouterr().out

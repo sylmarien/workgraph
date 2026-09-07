@@ -23,14 +23,26 @@
   - the spent cost and the effective cost limit when the workflow declares
     one.
 - `workgraph show-node <node>#<n>` — review one node run of the run in the
-  current directory; `<node>` alone names the node's last node run. The
-  header lists the start time, the end time and duration (or the running
-  time of a node run in progress, or `interrupted` for a node run without
-  an end in a run that holds no lock), the cost, and the spent cost. Times
-  are local ISO 8601. The sections follow:
+  current directory; `<node>` alone names the node's last node run. Times are
+  local ISO 8601. Every header label pads to the width of `started  `, so
+  `fallback` is followed by one space and `session` by two. The header lists,
+  in order:
+  - the start time, then `resumed <predecessor>` when the node run resumed an
+    agent session;
+  - `fallback <time>  <error>` when the node run fell back to a fresh spawn;
+  - the end time and duration, or the running time of a node run in progress,
+    or `interrupted` for a node run without an end in a run that holds no
+    lock;
+  - the cost and the spent cost;
+  - `session <id>` for an agent node run that ended with a session.
+
+  The sections follow:
   - `input`: the run input and the delivered handoff.
   - `stdout` and `stderr`: the node run output. Agent stdout renders as a
-    transcript; `--raw` prints the harness's JSONL lines instead.
+    transcript; `--raw` prints the harness's JSONL lines instead. After a
+    fallback each section holds the resumed spawn's output, the marker
+    `FALLBACK → fresh spawn` (with the error on `stdout`), then the fresh
+    spawn's output; `--raw` applies to both spawns.
   - `outcome`: `<outcome> → <target>`; a map node run lists its children.
   - `handoff`: the emitted handoff.
 
@@ -45,14 +57,19 @@
   - the name, the start time, and the `input` section;
   - the node run's stdout on stdout and its stderr on stderr, as complete
     lines arrive;
-  - the end time, duration, and cost lines, then the `outcome` and
-    `handoff` sections, at the node run's end.
+  - the `fallback`, end time, duration, cost, and `session` lines, then the
+    `outcome` and `handoff` sections, at the node run's end.
 
-  After a fallback, the fresh spawn's output follows the resumed spawn's.
+  At a fallback the marker `FALLBACK → fresh spawn  <error>` prints on stdout
+  and `FALLBACK → fresh spawn` on stderr, and the fresh spawn's output
+  follows. A follow attached after the fallback prints the resumed spawn's
+  output and the markers first.
 - `workgraph show-journal` — list the events of the run in the current
   directory, one line per event, each starting with the local ISO 8601 time:
   - `run: <workflow> "<input>"`
-  - `<node run>: started`
+  - `<node run>: started`, then `resumed <predecessor>` when the node run
+    resumed an agent session. The predecessor is the node run whose end
+    carried that session, or the session identifier when no end did.
   - `<node run>: <outcome> → <target>  <duration>`, then `$<cost>` for an
     agent node run; `<node run>: failure: <message>  <duration>`
   - `<node>: LIMIT → <target>`
@@ -72,6 +89,11 @@
   - `[<node run>] ` for a stdout line
   - `[<node run> stderr] ` for a stderr line
 
+  A node run that fell back prints the resumed spawn's stdout and stderr
+  before its `FALLBACK → fresh spawn` marker. The fresh spawn's output
+  follows the marker. The lines and their order are the same with and
+  without `--follow`, and whenever the follow attached.
+
   Agent stdout renders as a transcript unless `--raw`. Each error prints its
   message on stderr and exits 1:
   - `no run in <dir>`
@@ -90,8 +112,7 @@
   - it ends at `END`.
 
   `--with-nodes --follow` prints the output of every node run in progress
-  as it arrives; after a fallback, the fresh spawn's output follows the
-  fallback line under the same origin as the resumed spawn's.
+  as it arrives.
 
   `--graph` draws the run's path as a vertical chain instead of the event
   lines: a header `run: <workflow> "<input>" · spent <t> · $<c> · <state>`
@@ -99,11 +120,16 @@
   with its glyph, name, duration, and `$<cost>` for an agent node run, the
   outcome on an edge row `│ <outcome>`, and fan-outs to the right, one child
   per row. Glyphs: `◇` ended agent node run, `✓` coded pass, `✗` coded fail
-  or failure, `◆` current, `⬡` gate, `┆ <node> → LIMIT` diversion, `⚠`
-  escalation or budget. The chain ends on `END`, `✗ failure: <message>`, or
-  `⚠ <reason> at <node>`. `--graph --follow` needs a terminal and redraws
-  the chain in place every 0.1 s, the current glyph fading on a 2 s sine
-  period, until the run stops; the last frame shows the final state.
+  or failure, `◆` current, `↻` resumed agent node run, in progress or ended,
+  `⬡` gate, `┆ <node> → LIMIT` diversion, `⚠` escalation or budget. After a
+  fallback the row draws `◆`, then `◇` at the node run's end. The row of a
+  resumed node run carries `resumed <predecessor>`, and a row that fell back
+  carries `fallback` after it. Both follow the duration and the cost, and
+  precede the outcome of a fanned-out row. The chain ends on `END`,
+  `✗ failure: <message>`, or `⚠ <reason> at <node>`.
+  `--graph --follow` needs a terminal and redraws the chain in place every
+  0.1 s, the current glyph fading on a 2 s sine period, until the run stops;
+  the last frame shows the final state.
 - `workgraph viz <workflow>` — print the workflow graph. `--unicode`
   (default), `--ascii`, or `--mermaid` for the mermaid source. The unicode and
   ascii styles widen the diagram to the terminal width. `--theme <name>` picks

@@ -82,6 +82,14 @@ _Avoid_: Attempt, process, launch
 The fresh spawn a node run makes after its resumed spawn exits non-zero. The node run keeps its name and counts one visit; the resumed spawn's output moves to `<node run>.resume.stdout` and `.resume.stderr`.
 _Avoid_: Retry, restart
 
+**Predecessor**:
+The node run whose end event carried the agent session a node run resumed. A view names it in the suffix `resumed <predecessor>`. When no end event carries that session, the session identifier stands in for the predecessor.
+_Avoid_: Parent, previous run, source session
+
+**Fallback marker**:
+The `FALLBACK → fresh spawn` text a view draws where a node run fell back. It carries the error in the journal and in a `stdout` section; a `stderr` section draws it alone.
+_Avoid_: Fallback line, fallback row
+
 **Run record**:
 The files a run leaves under `.workgraph/run/`: the state, the journal, and every node run output. `run` wipes the previous run record; `resume` appends to it.
 _Avoid_: Logs, artifacts, history

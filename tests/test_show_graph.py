@@ -6,6 +6,7 @@ import pty
 import re
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -18,9 +19,17 @@ from tests.test_show_journal import (
     LIMITED_EVENTS,
     PARKED_EVENTS,
     PLAN_2_ENDED_EVENTS,
+    RESUMED_EVENTS,
+    UNMATCHED_SESSION_EVENTS,
     write_state,
 )
-from tests.test_show_node import build_event, build_start_event, write_record
+from tests.test_show_node import (
+    build_end_event,
+    build_event,
+    build_start_event,
+    find_event_index,
+    write_record,
+)
 from workgraph import graph, show
 from workgraph.cli import main
 from workgraph.run import LOCK_FILE
@@ -292,12 +301,131 @@ def test_graph_follow_on_a_run_that_exits_without_a_stop_is_an_error(
     assert capsys.readouterr().err == "the run stopped without a stop event\n"
 
 
-def test_sessions_and_a_fallback_draw_the_same_chain(
+@pytest.mark.parametrize(
+    ("events", "plan_2_row"),
+    [
+        (RESUMED_EVENTS, "↻ plan#2    9s  $0.10  resumed plan#1"),
+        (FALLBACK_EVENTS, "◇ plan#2    9s  $0.10  resumed plan#1  fallback"),
+        (UNMATCHED_SESSION_EVENTS, "↻ plan#2    9s  $0.10  resumed lost-1"),
+    ],
+)
+def test_an_ended_resumed_node_run_draws_its_glyph_and_its_suffix(
+    dev_project: Path,
+    capsys: pytest.CaptureFixture[str],
+    events: list[dict[str, Any]],
+    plan_2_row: str,
+) -> None:
+    write_record(dev_project, events)
+    assert main(["show-journal", "--graph"]) == 0
+    assert f"\n{plan_2_row}\n" in capsys.readouterr().out
+
+
+# The run in progress at plan#2, which resumed the session of plan#1.
+RESUMED_EVENTS_AT_PLAN_2 = RESUMED_EVENTS[:10]
+
+
+@pytest.mark.parametrize(
+    ("events", "plan_2_row"),
+    [
+        (RESUMED_EVENTS_AT_PLAN_2, "↻ plan#2    29s…  resumed plan#1"),
+        (
+            [*RESUMED_EVENTS_AT_PLAN_2, build_event("fallback", 95, node="plan#2", error="boom")],
+            "◆ plan#2    29s…  resumed plan#1  fallback",
+        ),
+    ],
+)
+def test_a_resumed_node_run_in_progress_draws_its_glyph_and_its_suffix(
+    dev_project: Path,
+    frozen_clock: None,
+    capsys: pytest.CaptureFixture[str],
+    events: list[dict[str, Any]],
+    plan_2_row: str,
+) -> None:
+    write_record(dev_project, events)
+    (dev_project / LOCK_FILE).touch()
+    assert main(["show-journal", "--graph"]) == 0
+    output = capsys.readouterr().out
+    assert output.startswith('run: dev "issue #5" · spent 1m59s · $0.92 · running plan#2 29s…\n')
+    assert output.endswith(f"\n{plan_2_row}\n")
+
+
+def test_a_resumed_node_run_that_failed_draws_the_failure_glyph(
     dev_project: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    write_record(dev_project, PARKED_EVENTS)
+    write_record(
+        dev_project,
+        [
+            *RESUMED_EVENTS_AT_PLAN_2,
+            build_end_event(
+                "plan#2", 100, failure="node 'plan': agent exited with code 1", cost=0.1
+            ),
+            build_event("stop", 100, reason="failure", node="plan"),
+        ],
+    )
     assert main(["show-journal", "--graph"]) == 0
-    plain_output = capsys.readouterr().out
+    assert capsys.readouterr().out.endswith(
+        "\n✗ plan#2    9s  $0.10  resumed plan#1\n"
+        "✗ failure: node 'plan': agent exited with code 1\n"
+    )
+
+
+def test_a_fanned_out_node_run_carries_its_suffix_before_its_outcome(
+    dev_project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    events = list(ENDED_EVENTS)
+    events[find_event_index(events, "test#1", "end")] = build_end_event(
+        "test#1",
+        91,
+        failure="node 'test': agent reported an error",
+        map="checks",
+        cost=0.5,
+        session="test-1",
+    )
+    events[find_event_index(events, "test#2", "start")] = build_start_event(
+        "test#2", 230, map="checks", session="test-1"
+    )
+    write_record(dev_project, events)
+    assert main(["show-journal", "--graph"]) == 0
+    assert "└ ↻ test#2  1h00m  $0.75  resumed test#1  pass\n" in capsys.readouterr().out
+
+
+def test_the_row_suffix_is_colored_on_a_terminal(
+    dev_project: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.delenv("COLORTERM", raising=False)
     write_record(dev_project, FALLBACK_EVENTS)
     assert main(["show-journal", "--graph"]) == 0
-    assert capsys.readouterr().out == plain_output
+    assert (
+        "\x1b[38;5;248m  resumed plan#1\x1b[0m\x1b[33m  fallback\x1b[0m" in capsys.readouterr().out
+    )
+
+
+def test_graph_follow_pulses_the_resumed_glyph_until_the_fallback(
+    dev_project: Path,
+    capsys: pytest.CaptureFixture[str],
+    queue_actions: Callable[..., None],
+    one_poll_per_frame: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.setenv("COLORTERM", "truecolor")
+    write_record(dev_project, RESUMED_EVENTS_AT_PLAN_2)
+    (dev_project / LOCK_FILE).touch()
+    queue_actions(
+        lambda: None,
+        lambda: append_events(
+            dev_project, build_event("fallback", 95, node="plan#2", error="boom")
+        ),
+        lambda: append_events(dev_project, *RESUMED_EVENTS[10:]),
+    )
+    exit_code, output = run_on_pty(["show-journal", "--graph", "--follow"])
+    assert exit_code == 0
+    frames = split_frames(output)
+    assert "↻ plan#2" in frames[0]
+    assert "38;2;175;175;175" in output.split("\x1b[H")[1]
+    assert "◆ plan#2" in frames[2]
+    assert "fallback" in frames[2]
+    assert main(["show-journal", "--graph"]) == 0
+    assert frames[-1] == capsys.readouterr().out

@@ -85,6 +85,7 @@ TEST_2_RUNNING_EVENTS = [
         handoff=PLAN_HANDOFF,
         target="checks",
         cost=0.4213,
+        session="plan-1",
         spent_time=30,
         spent_cost=0.4213,
     ),
@@ -121,6 +122,29 @@ TEST_2_ENDED_EVENTS = [
         spent_cost=1.7713,
     ),
     build_event("stop", 3700, reason="end", node="checks"),
+]
+# plan#2 resumed the session of plan#1, fell back to a fresh spawn, and ended with a new session.
+PLAN_2_FELL_BACK_EVENTS = [
+    *TEST_2_ENDED_EVENTS[:9],
+    build_start_event("plan#2", 91, CHECKS_DELIVERED_HANDOFF, session="plan-1"),
+    build_event("fallback", 95, node="plan#2", error="boom"),
+    build_end_event(
+        "plan#2",
+        100,
+        outcome="done",
+        target="checks",
+        cost=0.1,
+        session="plan-2",
+        spent_time=99,
+        spent_cost=1.0213,
+    ),
+    *TEST_2_ENDED_EVENTS[11:],
+]
+# plan#2 resumed the session of plan#1 and ended without falling back.
+PLAN_2_RESUMED_EVENTS = [
+    journal_event
+    for journal_event in PLAN_2_FELL_BACK_EVENTS
+    if journal_event["event"] != "fallback"
 ]
 
 
@@ -200,6 +224,15 @@ def recorded_project(project: Path, utc_plus_2: None) -> Path:
     return project
 
 
+def find_event_index(events: list[dict[str, Any]], node_run_name: str, event_name: str) -> int:
+    """Return the index of the node run's event of that name."""
+    return next(
+        index
+        for index, event in enumerate(events)
+        if event.get("node") == node_run_name and event["event"] == event_name
+    )
+
+
 def write_record(
     project: Path, events: list[dict[str, Any]], output_files: dict[str, str] | None = None
 ) -> None:
@@ -225,6 +258,7 @@ def test_ended_agent_node_run(recorded_project: Path, capsys: pytest.CaptureFixt
 started  2026-08-31T12:00:01+02:00
 ended    2026-08-31T12:00:31+02:00  30s
 cost     $0.42  spent $0.42
+session  plan-1
 
 ── input ──
 issue #5
@@ -556,21 +590,152 @@ def test_codex_raw_prints_the_file_unchanged(
     assert read_stdout_section(capsys.readouterr().out) == CODEX_STDOUT
 
 
-def test_a_node_run_that_fell_back_shows_the_output_of_its_fresh_spawn(
+def test_an_ended_node_run_without_a_session_prints_no_session_line(
     recorded_project: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    events = list(TEST_2_ENDED_EVENTS)
-    events[9] = build_start_event("plan#2", 91, CHECKS_DELIVERED_HANDOFF, session="plan-1")
-    events.insert(10, build_event("fallback", 95, node="plan#2", error="boom"))
+    assert main(["show-node", "plan#2"]) == 0
+    assert "\ncost     $0.10  spent $1.02\n\n── input ──\n" in capsys.readouterr().out
+
+
+def test_a_resumed_node_run_that_did_not_fall_back_names_its_predecessor(
+    recorded_project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_record(recorded_project, PLAN_2_RESUMED_EVENTS)
+    assert main(["show-node", "plan#2"]) == 0
+    assert (
+        capsys.readouterr().out
+        == f"""plan#2
+started  2026-08-31T12:01:31+02:00  resumed plan#1
+ended    2026-08-31T12:01:40+02:00  9s
+cost     $0.10  spent $1.02
+session  plan-2
+
+── input ──
+issue #5
+
+Handoff from checks:
+{CHECKS_HANDOFF}
+
+── stdout ──
+(empty)
+
+── stderr ──
+(empty)
+
+── outcome ──
+done → checks
+
+── handoff ──
+(none)
+
+"""
+    )
+
+
+RESUMED_SPAWN_OUTPUT = {
+    "plan#2.resume.stdout": build_assistant_event(build_text_block("Resuming.")) + "\n",
+    "plan#2.resume.stderr": "resumed warn\n",
+    "plan#2.stdout": build_assistant_event(build_text_block("Starting over.")) + "\n",
+}
+
+
+def test_a_node_run_that_fell_back_shows_both_spawns_around_the_marker(
+    recorded_project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_record(recorded_project, PLAN_2_FELL_BACK_EVENTS, RESUMED_SPAWN_OUTPUT)
+    assert main(["show-node", "plan#2"]) == 0
+    assert (
+        capsys.readouterr().out
+        == f"""plan#2
+started  2026-08-31T12:01:31+02:00  resumed plan#1
+fallback 2026-08-31T12:01:35+02:00  boom
+ended    2026-08-31T12:01:40+02:00  9s
+cost     $0.10  spent $1.02
+session  plan-2
+
+── input ──
+issue #5
+
+Handoff from checks:
+{CHECKS_HANDOFF}
+
+── stdout ──
+Resuming.
+FALLBACK → fresh spawn  boom
+Starting over.
+
+── stderr ──
+resumed warn
+FALLBACK → fresh spawn
+
+── outcome ──
+done → checks
+
+── handoff ──
+(none)
+
+"""
+    )
+
+
+def test_an_empty_resumed_spawn_still_shows_the_marker(
+    recorded_project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     write_record(
         recorded_project,
-        events,
-        {
-            "plan#2.resume.stdout": build_assistant_event(build_text_block("Resuming.")) + "\n",
-            "plan#2.stdout": build_assistant_event(build_text_block("Starting over.")) + "\n",
-        },
+        PLAN_2_FELL_BACK_EVENTS,
+        {**RESUMED_SPAWN_OUTPUT, "plan#2.resume.stdout": "", "plan#2.resume.stderr": ""},
     )
     assert main(["show-node", "plan#2"]) == 0
     output = capsys.readouterr().out
-    assert output.startswith("plan#2\nstarted  2026-08-31T12:01:31+02:00\n")
-    assert read_stdout_section(output) == "Starting over.\n"
+    assert read_stdout_section(output) == "FALLBACK → fresh spawn  boom\nStarting over.\n"
+    assert "\n── stderr ──\nFALLBACK → fresh spawn\n\n── outcome ──\n" in output
+
+
+def test_raw_prints_both_spawns_json_lines_around_the_marker(
+    recorded_project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_record(recorded_project, PLAN_2_FELL_BACK_EVENTS, RESUMED_SPAWN_OUTPUT)
+    assert main(["show-node", "--raw", "plan#2"]) == 0
+    assert read_stdout_section(capsys.readouterr().out) == (
+        RESUMED_SPAWN_OUTPUT["plan#2.resume.stdout"]
+        + "FALLBACK → fresh spawn  boom\n"
+        + RESUMED_SPAWN_OUTPUT["plan#2.stdout"]
+    )
+
+
+def test_a_session_that_matches_no_end_prints_the_identifier(
+    recorded_project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    events = list(PLAN_2_FELL_BACK_EVENTS)
+    events[find_event_index(events, "plan#2", "start")] = build_start_event(
+        "plan#2", 91, CHECKS_DELIVERED_HANDOFF, session="lost-1"
+    )
+    write_record(recorded_project, events, RESUMED_SPAWN_OUTPUT)
+    assert main(["show-node", "plan#2"]) == 0
+    assert capsys.readouterr().out.startswith(
+        "plan#2\nstarted  2026-08-31T12:01:31+02:00  resumed lost-1\n"
+    )
+
+
+def test_the_marker_and_the_status_lines_are_colored_on_a_terminal(
+    recorded_project: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.delenv("COLORTERM", raising=False)
+    write_record(recorded_project, PLAN_2_FELL_BACK_EVENTS, RESUMED_SPAWN_OUTPUT)
+    assert main(["show-node", "plan#2"]) == 0
+    output = capsys.readouterr().out
+    assert "\x1b[33mFALLBACK → fresh spawn\x1b[0m\x1b[38;5;248m  boom\x1b[0m\n" in output
+    assert "\x1b[38;5;248mfallback 2026-08-31T12:01:35+02:00  boom\x1b[0m\n" in output
+    assert "\x1b[38;5;248msession  plan-2\x1b[0m\n" in output
+
+
+def test_a_missing_resumed_output_file_is_an_error(
+    recorded_project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_record(recorded_project, PLAN_2_FELL_BACK_EVENTS, RESUMED_SPAWN_OUTPUT)
+    (recorded_project / RUN_DIR / "plan#2.resume.stdout").unlink()
+    assert main(["show-node", "plan#2"]) == 1
+    assert capsys.readouterr().err == "no output file .workgraph/run/plan#2.resume.stdout\n"
