@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.2.16 (2026-09-07)
+
+### Patch
+
+- Make the pr agent reference the issue in the commit message and PR body
+  ([`6ff179f`](https://github.com/sylmarien/workgraph/commit/6ff179f613409ec257f2c9d65482074199cc5bdc))
+
+
 ## v0.2.15 (2026-09-07)
 
 ### Patch
