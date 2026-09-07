@@ -51,8 +51,7 @@ pass = "END"
 fail = "END"
 """
 
-FAKE_HARNESS = """#!/bin/sh
-printf '%s\\0' "$@" '===' >> "$(basename "$0")-calls.txt"
+FAKE_HARNESS = """printf '%s\\0' "$@" '===' >> "$(basename "$0")-calls.txt"
 agent=
 prev=
 for arg in "$@"; do
@@ -76,14 +75,19 @@ done
 """
 
 
+def write_fake_command(bin_directory: Path, name: str, script: str) -> None:
+    """Write an executable /bin/sh script of the name into the directory."""
+    bin_directory.mkdir(parents=True, exist_ok=True)
+    command = bin_directory / name
+    command.write_text(f"#!/bin/sh\n{script}")
+    command.chmod(0o755)
+
+
 def install_fake_harness(project: Path, monkeypatch: pytest.MonkeyPatch, harness_name: str) -> None:
     """Put a fake harness CLI on PATH that logs its argv and replays queued responses."""
-    bin_dir = project / "bin"
-    bin_dir.mkdir(exist_ok=True)
-    script = bin_dir / harness_name
-    script.write_text(FAKE_HARNESS)
-    script.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    bin_directory = project / "bin"
+    write_fake_command(bin_directory, harness_name, FAKE_HARNESS)
+    monkeypatch.setenv("PATH", f"{bin_directory}{os.pathsep}{os.environ['PATH']}")
 
 
 @pytest.fixture

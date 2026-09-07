@@ -41,10 +41,22 @@ As a Claude Code plugin:
 ```
 
 Installing the plugin adds the `/workgraph` skill and bundles the `dev`
-workflow with its agent definitions. The plugin's `install` skill finishes
-the setup: it checks that `claude` and `uv` are on `PATH`, installs the CLI
-with `uv`, and places the bundled files under `~/.workgraph/`. It installs
-neither `claude` nor `uv`.
+workflow with its agent definitions. The plugin's `install` and `update`
+skills finish the setup. Both check that `claude`, `uv`, and `git` are on
+`PATH` and install none of them.
+
+Run `install` once, after installing the plugin, and `update` after each
+plugin upgrade.
+
+`install` places every missing definition under `~/.workgraph/`, leaves
+identical ones alone, and asks before replacing one whose contents differ.
+`update` replaces every differing definition, local edits included, behind a
+backup. Both install the CLI release from the latest repository tag, which is
+independent of the installed plugin version.
+
+Before a replacement, workgraph preserves the destination's bytes in
+`<stem>.backup-<sha256><extension>` beside it. A backup is never overwritten
+and never deleted by workgraph.
 
 As a Codex plugin:
 
@@ -54,11 +66,9 @@ codex plugin add workgraph@workgraph
 ```
 
 Start a new Codex session and invoke `$workgraph dev "#<issue>"`.
-The plugin shares the install and run skills, bundled workflow, and agent
-definitions with the Claude Code plugin. The `dev` workflow defaults to
+The plugin shares the install, update, and run skills, bundled workflow, and
+agent definitions with the Claude Code plugin. The `dev` workflow defaults to
 the Claude harness, so it requires `claude` and `uv` on `PATH` in Codex too.
-The install skill places the definitions under `~/.workgraph/` and asks
-before replacing files whose contents differ.
 
 Codex reads the repository's existing marketplace at
 `.claude-plugin/marketplace.json` and its manifest at
