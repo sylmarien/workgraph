@@ -43,12 +43,12 @@ _Avoid_: Artifact, payload
 Free text a human attaches to a `reject`. The gate node delivers it as its handoff.
 _Avoid_: Comment, note
 
-**Agent brief**:
-The design of a change: the issue body or issue comment under the heading `## Agent Brief` that states the change's category, summary, current behavior, desired behavior, key interfaces, acceptance criteria, and out-of-scope items. The `design` node finds, writes, or revises it; the `plan` node plans from it.
-_Avoid_: Design doc, spec, PRD
+**Specification**:
+The design of a change: the issue body or issue comment under the heading `## Specification` that states the change's category, summary, current behavior, desired behavior, key interfaces, acceptance criteria, open choices, and out-of-scope items. The `design` node finds, writes, or revises it; the `plan` node plans from it.
+_Avoid_: Agent brief, design doc, spec, PRD
 
 **Implementation plan**:
-The ordered tasks that implement an agent brief: the issue comment under the heading `## Implementation Plan` that states the goal, the approach, the files, and the tasks, each with its files, interfaces, tests, and commit summary. The `plan` node finds, writes, or revises it; the `implement` node follows it task by task.
+The ordered tasks that implement a specification: the issue comment under the heading `## Implementation Plan` that states the goal, the approach, the files, and the tasks, each with its files, interfaces, tests, and commit summary. The `plan` node finds, writes, or revises it; the `implement` node follows it task by task.
 _Avoid_: Task list, roadmap, work breakdown
 
 **Agent definition**:
