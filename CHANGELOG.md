@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.3.3 (2026-09-20)
+
+### Patch
+
+- Publish releases to PyPI from the bump workflows
+  ([`dc997f6`](https://github.com/sylmarien/workgraph/commit/dc997f6c3835568eb695ad09b1b4f11a73b37034))
+
+
 ## v0.3.2 (2026-09-07)
 
 ### Patch
