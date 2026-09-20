@@ -72,9 +72,10 @@ the CLI to the same version. See the
 Without the plugin:
 
 ```sh
-uv tool install git+https://github.com/sylmarien/workgraph
+uv tool install workgraph
 ```
 
+`pip install workgraph` installs the same package from PyPI.
 `uv tool upgrade workgraph` upgrades it. Requires Python 3.12+. An agent
 node additionally requires the CLI of its harness on `PATH`: `claude` for
 `harness = "claude"`, `codex` for `harness = "codex"`.

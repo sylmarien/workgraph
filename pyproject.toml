@@ -11,6 +11,10 @@ dependencies = [
     "tomlkit>=0.15.1",
 ]
 
+[project.urls]
+Repository = "https://github.com/sylmarien/workgraph"
+Changelog = "https://github.com/sylmarien/workgraph/blob/main/CHANGELOG.md"
+
 [project.scripts]
 workgraph = "workgraph.cli:main"
 
