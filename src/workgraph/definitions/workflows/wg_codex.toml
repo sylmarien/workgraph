@@ -38,7 +38,7 @@ reject = "plan"
 [nodes.implement]
 agent = "wg_implement"
 harness = "codex"
-model = "gpt-5.6-sol"
+model = "gpt-6-sol"
 effort = "xhigh"
 sandbox = "danger-full-access"
 outcomes = ["done"]
@@ -88,7 +88,7 @@ outcomes = ["pass", "fail"]
 [nodes.summary]
 agent = "wg_summarize-review"
 harness = "codex"
-model = "gpt-5.6-sol"
+model = "gpt-6-sol"
 outcomes = ["done"]
 
 [nodes.summary.transitions]
@@ -97,7 +97,7 @@ done = "pr"
 [nodes.pr]
 agent = "wg_pr"
 harness = "codex"
-model = "gpt-5.6-luna"
+model = "gpt-6-luna"
 effort = "max"
 sandbox = "danger-full-access"
 outcomes = ["done"]
