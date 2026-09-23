@@ -20,9 +20,11 @@ from workgraph.harness import (
 
 # USD per million tokens: uncached input, cached input, cache write, output.
 # A Pro model offers no cached input discount, so its cached rate is its input rate.
-# Source: https://developers.openai.com/api/docs/pricing, read 2026-09-05.
+# Source: https://developers.openai.com/api/docs/pricing, read 2026-09-23.
 MODEL_RATES: dict[str, tuple[float, float, float, float]] = {
     "gpt-6-astra": (10.00, 1.00, 12.50, 50.00),
+    "gpt-6-sol": (2.00, 0.20, 2.50, 10.00),
+    "gpt-6-luna": (0.10, 0.01, 0.125, 0.50),
     "gpt-5.6-sol": (4.00, 0.40, 5.00, 20.00),
     "gpt-5.6": (4.00, 0.40, 5.00, 20.00),  # the documented alias of gpt-5.6-sol
     "gpt-daybreak-blue-latest": (4.00, 0.40, 5.00, 20.00),  # the Daybreak alias of gpt-5.6-sol
