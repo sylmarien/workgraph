@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.3.4 (2026-09-23)
+
+### Patch
+
+- Update the model names in the bundled wg and wg_codex workflows
+  ([`7b4bdce`](https://github.com/sylmarien/workgraph/commit/7b4bdce35c3cd3d19df4ce5bb5c1ccd59fd5ce77))
+
+
 ## v0.3.3 (2026-09-20)
 
 ### Patch
