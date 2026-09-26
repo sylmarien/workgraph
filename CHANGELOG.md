@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.3.5 (2026-09-26)
+
+### Patch
+
+- Rebase onto origin/main before squashing in the pr agent
+  ([`a3793ec`](https://github.com/sylmarien/workgraph/commit/a3793eccfd4d1fec97bc3cbcd1de56345bbcc05b))
+
+
 ## v0.3.4 (2026-09-23)
 
 ### Patch
